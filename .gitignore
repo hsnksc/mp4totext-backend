@@ -63,8 +63,8 @@ uploads/
 temp/
 tmp/
 
-# ML Models (download at runtime)
-models/
+# ML Models (download at runtime) - only root level, not app/models/
+/models/
 *.pt
 *.bin
 *.onnx
