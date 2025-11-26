@@ -1,0 +1,177 @@
+"""
+Modal FLUX Service
+FLUX.1 image generation service - Ultra quality
+
+NOTE: Modal app defined in modal_flux_app.py (standalone, no backend dependencies)
+"""
+
+import logging
+import os
+from typing import List, Optional
+
+logger = logging.getLogger(__name__)
+
+# Modal imports (lazy loaded)
+modal = None
+app = None
+FluxInference = None
+
+try:
+    import modal as modal_lib
+    modal = modal_lib
+    
+    # Import from standalone modal app file
+    # Add backend root to sys.path for Celery workers
+    import sys
+    from pathlib import Path
+    backend_root = Path(__file__).parent.parent.parent
+    if str(backend_root) not in sys.path:
+        sys.path.insert(0, str(backend_root))
+    
+    from modal_flux_app import app, FluxInference
+    
+except ImportError as e:
+    logger.warning(f"⚠️ Modal library not installed or modal_flux_app.py not found: {e}")
+
+
+class ModalFluxService:
+    """
+    Wrapper service for Modal FLUX
+    Ultra-quality image generation with FLUX.1
+    """
+    
+    def __init__(self):
+        self.modal_token = os.getenv("MODAL_TOKEN_ID")
+        self.modal_secret = os.getenv("MODAL_TOKEN_SECRET")
+        
+        if not modal or not app:
+            logger.warning("⚠️ Modal library not installed")
+            self._enabled = False
+            return
+        
+        if not self.modal_token or not self.modal_secret:
+            logger.warning("⚠️ Modal credentials not configured")
+            self._enabled = False
+        else:
+            self._enabled = True
+            logger.info("✅ Modal FLUX service initialized")
+    
+    def is_enabled(self) -> bool:
+        """Check if service is enabled"""
+        return self._enabled
+    
+    async def generate_images(
+        self,
+        prompt: str,
+        num_images: int = 1,
+        seed: Optional[int] = None,
+        guidance_scale: float = 3.5,
+    ) -> List[bytes]:
+        """
+        Generate images with FLUX (async wrapper for sync method)
+        
+        Args:
+            prompt: Text prompt
+            num_images: Number of images
+            seed: Random seed
+            guidance_scale: Guidance scale (3.5 recommended)
+        
+        Returns:
+            List of PNG image bytes
+        """
+        # Just call sync version (Modal calls are already synchronous)
+        return self.generate_images_sync(prompt, num_images, seed, guidance_scale)
+    
+    def generate_images_sync(
+        self,
+        prompt: str,
+        num_images: int = 1,
+        seed: Optional[int] = None,
+        guidance_scale: float = 3.5,
+    ) -> List[bytes]:
+        """
+        Generate images with FLUX (synchronous)
+        
+        Args:
+            prompt: Text prompt for image generation
+            num_images: Number of images to generate
+            seed: Random seed for reproducibility
+            guidance_scale: Guidance scale (3.5 recommended for FLUX)
+        
+        Returns:
+            List of PNG image bytes
+        """
+        if not self.is_enabled():
+            logger.error("❌ FLUX service not enabled")
+            return []
+        
+        try:
+            logger.info(f"🎨 [FLUX] Generating {num_images} image(s) on Modal H100...")
+            logger.info(f"📝 Prompt: {prompt[:100]}...")
+            
+            with app.run():
+                inference = FluxInference()
+                images = inference.generate.remote(
+                    prompt=prompt,
+                    batch_size=num_images,
+                    seed=seed,
+                    guidance_scale=guidance_scale
+                )
+            
+            logger.info(f"✅ [FLUX] Generated {len(images)} image(s) successfully")
+            return images
+            
+        except Exception as e:
+            logger.error(f"❌ [FLUX] Generation failed: {e}", exc_info=True)
+            return []
+    
+    def generate_batch_sync(
+        self,
+        prompts: List[str],
+        seeds: Optional[List[int]] = None,
+        guidance_scale: float = 3.5,
+    ) -> List[bytes]:
+        """
+        Generate multiple images with different prompts (synchronous)
+        
+        Optimized for video generation - batch processing.
+        
+        Args:
+            prompts: List of text prompts (one per image)
+            seeds: Optional list of seeds (same length as prompts)
+            guidance_scale: Guidance scale (3.5 recommended)
+        
+        Returns:
+            List of PNG image bytes (same order as prompts)
+        """
+        if not self.is_enabled():
+            logger.error("❌ FLUX service not enabled")
+            return []
+        
+        try:
+            logger.info(f"🎨 [FLUX BATCH] Generating {len(prompts)} images on Modal H100...")
+            
+            with app.run():
+                inference = FluxInference()
+                images = inference.generate_batch.remote(
+                    prompts=prompts,
+                    seeds=seeds,
+                    guidance_scale=guidance_scale
+                )
+            
+            logger.info(f"✅ [FLUX BATCH] Generated {len(images)} images successfully")
+            
+            # Validate output
+            if len(images) != len(prompts):
+                logger.error(f"❌ [FLUX BATCH] Expected {len(prompts)} images, got {len(images)}")
+                return []
+            
+            return images
+            
+        except Exception as e:
+            logger.error(f"❌ [FLUX BATCH] Generation failed: {e}", exc_info=True)
+            return []
+
+
+# Singleton instance
+modal_flux = ModalFluxService()

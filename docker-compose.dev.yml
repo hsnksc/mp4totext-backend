@@ -1,0 +1,188 @@
+version: '3.9'
+
+# ============================================================================
+# MP4toText Backend - Docker Compose Development Configuration
+# ============================================================================
+# Usage:
+#   docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+# ============================================================================
+
+services:
+  # ==========================================================================
+  # FastAPI Backend - Development Override
+  # ==========================================================================
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development  # Use development stage
+    container_name: mp4totext-backend-dev
+    environment:
+      # Development specific
+      APP_ENV: development
+      DEBUG: "true"
+      LOG_LEVEL: DEBUG
+      DB_ECHO: "true"
+      RELOAD: "true"
+      
+      # CORS - Allow more origins in development
+      CORS_ORIGINS: "http://localhost:3000,http://localhost:19006,http://127.0.0.1:3000,http://192.168.1.1:19006"
+    volumes:
+      # Mount source code for hot reload
+      - ./app:/app/app:ro
+      - ./tests:/app/tests:ro
+      - ./alembic:/app/alembic:ro
+      - ./requirements.txt:/app/requirements.txt:ro
+      - ./requirements-test.txt:/app/requirements-test.txt:ro
+      
+      # Logs and models (read-write)
+      - ./logs:/app/logs
+      - ./models:/app/models
+      - uploads_data:/app/uploads
+    command: >
+      uvicorn app.main:app 
+      --host 0.0.0.0 
+      --port 8000 
+      --reload 
+      --reload-dir /app/app 
+      --log-level debug
+    ports:
+      - "8000:8000"
+      # Expose debugger port
+      - "5678:5678"
+
+  # ==========================================================================
+  # Celery Worker - Development Override
+  # ==========================================================================
+  celery-worker:
+    build:
+      target: development
+    container_name: mp4totext-celery-worker-dev
+    environment:
+      LOG_LEVEL: DEBUG
+      CELERY_LOG_LEVEL: DEBUG
+    volumes:
+      # Mount source code for hot reload
+      - ./app:/app/app:ro
+      - ./logs:/app/logs
+      - ./models:/app/models
+      - uploads_data:/app/uploads
+    command: >
+      watchmedo auto-restart 
+      --directory=/app/app 
+      --pattern="*.py" 
+      --recursive 
+      -- celery -A app.celery_config.celery worker 
+      --loglevel=debug 
+      --concurrency=2
+
+  # ==========================================================================
+  # Celery Beat - Development Override
+  # ==========================================================================
+  celery-beat:
+    build:
+      target: development
+    container_name: mp4totext-celery-beat-dev
+    environment:
+      LOG_LEVEL: DEBUG
+    volumes:
+      - ./app:/app/app:ro
+      - ./logs:/app/logs
+
+  # ==========================================================================
+  # PostgreSQL - Development Override
+  # ==========================================================================
+  postgres:
+    ports:
+      - "5432:5432"  # Expose for external tools (pgAdmin, DBeaver)
+    environment:
+      POSTGRES_DB: mp4totext_dev
+      POSTGRES_USER: dev_user
+      POSTGRES_PASSWORD: dev_password_123
+
+  # ==========================================================================
+  # Redis - Development Override
+  # ==========================================================================
+  redis:
+    ports:
+      - "6379:6379"  # Expose for Redis CLI
+    command: redis-server --requirepass dev_redis_123 --maxmemory 128mb
+
+  # ==========================================================================
+  # MinIO - Development Override
+  # ==========================================================================
+  minio:
+    ports:
+      - "9000:9000"
+      - "9001:9001"  # Console UI
+    environment:
+      MINIO_ROOT_USER: dev_minio
+      MINIO_ROOT_PASSWORD: dev_minio_123
+
+  # ==========================================================================
+  # Flower - Celery Monitoring UI (Development Only)
+  # ==========================================================================
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: mp4totext-flower
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - celery-worker
+    environment:
+      CELERY_BROKER_URL: redis://:dev_redis_123@redis:6379/1
+      CELERY_RESULT_BACKEND: redis://:dev_redis_123@redis:6379/2
+      FLOWER_PORT: 5555
+      FLOWER_BASIC_AUTH: admin:admin123
+    command: >
+      celery -A app.celery_config.celery flower 
+      --port=5555 
+      --basic_auth=admin:admin123
+    ports:
+      - "5555:5555"
+    networks:
+      - mp4totext-network
+
+  # ==========================================================================
+  # pgAdmin - PostgreSQL Web UI (Development Only)
+  # ==========================================================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: mp4totext-pgadmin
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@mp4totext.local
+      PGADMIN_DEFAULT_PASSWORD: admin123
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "5050:80"
+    networks:
+      - mp4totext-network
+
+  # ==========================================================================
+  # Redis Commander - Redis Web UI (Development Only)
+  # ==========================================================================
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: mp4totext-redis-commander
+    restart: unless-stopped
+    depends_on:
+      - redis
+    environment:
+      REDIS_HOSTS: local:redis:6379:0:dev_redis_123
+    ports:
+      - "8081:8081"
+    networks:
+      - mp4totext-network
+
+volumes:
+  pgadmin_data:
+    name: mp4totext-pgadmin-data
