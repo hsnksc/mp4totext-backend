@@ -8,6 +8,7 @@ uvicorn[standard]==0.24.0
 python-multipart==0.0.6
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
 python-dotenv==1.0.0
 
 # =============================================================================
@@ -15,9 +16,8 @@ python-dotenv==1.0.0
 # =============================================================================
 sqlalchemy==2.0.23
 alembic==1.12.1
-# PostgreSQL drivers removed (using SQLite)
-# asyncpg==0.29.0
-# psycopg2-binary==2.9.9
+# PostgreSQL drivers for production (Coolify)
+psycopg2-binary==2.9.9
 
 # =============================================================================
 # CACHE & MESSAGE BROKER
@@ -48,27 +48,25 @@ aiofiles==23.2.1
 # AI / ML MODELS
 # =============================================================================
 
-# Whisper (Speech-to-Text)
-openai-whisper==20250625
-# openai==1.3.8  # Optional: Use OpenAI API instead
+# Whisper (Speech-to-Text) - Only for local development
+# For production (Coolify), use AssemblyAI instead
+# openai-whisper==20231117
+# torch==2.1.0
+# torchaudio==2.1.0
+
+# OpenAI API (for GPT enhancement)
+openai==1.6.1
 
 # AssemblyAI (Cloud transcription with LLM Gateway support)
 assemblyai>=0.40.0  # LLM Gateway requires >=0.30.0
 
-# PyTorch (for Global Speaker Model & Whisper & wav2vec2)
-# Using CPU-only version to reduce build time and size
-torch>=2.6.0
-torchaudio>=2.6.0
+# Transformers (for text processing) - lighter version without torch
+# transformers==4.37.0
+# sentencepiece==0.1.99  # Tokenizer dependency
 
-# Transformers (for wav2vec2-turkish)
-transformers==4.37.0
-sentencepiece==0.1.99  # Tokenizer dependency
-
-# Audio Processing
-librosa==0.11.0
-soundfile==0.13.1
-ffmpeg-python==0.2.0
+# Audio Processing (lightweight)
 pydub==0.25.1
+ffmpeg-python==0.2.0
 
 # Speaker Recognition (REMOVED - Using AssemblyAI's built-in diarization)
 # resemblyzer==0.1.1.dev0
