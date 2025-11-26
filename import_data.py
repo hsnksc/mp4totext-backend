@@ -9,8 +9,8 @@ from app.models.transcription import Transcription
 from app.models.credit_transaction import CreditTransaction
 
 def import_data():
-    # Read JSON data
-    with open('/tmp/migration_data.json', 'r', encoding='utf-8') as f:
+    # Read JSON data - file is in /app/ directory (same as script)
+    with open('/app/migration_data.json', 'r', encoding='utf-8') as f:
         data = json.load(f)
     
     db = SessionLocal()
