@@ -25,10 +25,17 @@ from app.schemas.transcription import (
 )
 from app.auth.utils import get_current_active_user
 from app.services.storage import get_storage_service
-from app.services.audio_processor import get_audio_processor
 from app.services.credit_service import get_credit_service, CreditPricing, InsufficientCreditsError
 from app.settings import get_settings
 from app.websocket import get_ws_manager
+
+# Optional: audio processor (requires librosa, whisper)
+try:
+    from app.services.audio_processor import get_audio_processor
+    AUDIO_PROCESSOR_AVAILABLE = True
+except ImportError:
+    AUDIO_PROCESSOR_AVAILABLE = False
+    get_audio_processor = None
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
