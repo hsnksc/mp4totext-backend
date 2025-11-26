@@ -1,5 +1,6 @@
 # Dockerfile for MP4toText Backend
 # Python 3.12 + FastAPI (Production Ready)
+# Build: 2025-11-26
 
 FROM python:3.12-slim
 
