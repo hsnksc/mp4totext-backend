@@ -6,14 +6,46 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 import tempfile
-import librosa
-import soundfile as sf
 import numpy as np
 
-from app.services.whisper_service import WhisperService
-from app.services.speaker_service import SpeakerRecognitionService
-
 logger = logging.getLogger(__name__)
+
+# Lazy imports for heavy dependencies
+librosa = None
+sf = None
+WhisperService = None
+SpeakerRecognitionService = None
+
+def _load_audio_deps():
+    global librosa, sf
+    if librosa is None:
+        import librosa as _librosa
+        import soundfile as _sf
+        librosa = _librosa
+        sf = _sf
+    return librosa, sf
+
+def _load_whisper_service():
+    global WhisperService
+    if WhisperService is None:
+        try:
+            from app.services.whisper_service import WhisperService as _WhisperService
+            WhisperService = _WhisperService
+        except ImportError:
+            logger.warning("⚠️ WhisperService not available")
+            WhisperService = None
+    return WhisperService
+
+def _load_speaker_service():
+    global SpeakerRecognitionService
+    if SpeakerRecognitionService is None:
+        try:
+            from app.services.speaker_service import SpeakerRecognitionService as _SpeakerRecognitionService
+            SpeakerRecognitionService = _SpeakerRecognitionService
+        except ImportError:
+            logger.warning("⚠️ SpeakerRecognitionService not available")
+            SpeakerRecognitionService = None
+    return SpeakerRecognitionService
 
 
 class AudioProcessor:

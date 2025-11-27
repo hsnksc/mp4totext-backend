@@ -5,13 +5,28 @@ Whisper transcription service with Faster-Whisper backend
 - Language-specific routing: Turkish → wav2vec2, Others → Whisper
 """
 
-import whisper
 import logging
 from pathlib import Path
 from typing import Optional, Dict, Any
-import torch
 
 logger = logging.getLogger(__name__)
+
+# Lazy imports for heavy dependencies
+whisper = None
+torch = None
+
+def _load_whisper():
+    global whisper, torch
+    if whisper is None:
+        try:
+            import whisper as _whisper
+            import torch as _torch
+            whisper = _whisper
+            torch = _torch
+        except ImportError:
+            logger.warning("⚠️ OpenAI Whisper not installed. Use AssemblyAI or Faster-Whisper instead.")
+            raise ImportError("openai-whisper is not installed")
+    return whisper, torch
 
 
 class WhisperService:

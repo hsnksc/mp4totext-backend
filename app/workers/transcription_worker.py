@@ -25,13 +25,21 @@ from sqlalchemy.orm import sessionmaker, Session
 from app.settings import get_settings
 from app.models.transcription import Transcription, TranscriptionStatus
 
-# Services
-from app.services.audio_processor import get_audio_processor
+# Services - lazy imports for heavy dependencies
 from app.services.storage import FileStorageService
 from app.services.gemini_service import get_gemini_service
 from app.services.credit_service import get_credit_service, CreditPricing
 from app.models.credit_transaction import OperationType
-from app.services.speaker_recognition import create_speaker_recognizer
+
+# Audio processor - lazy import
+def get_audio_processor_lazy():
+    from app.services.audio_processor import get_audio_processor
+    return get_audio_processor()
+
+# Speaker recognition - lazy import  
+def create_speaker_recognizer_lazy(*args, **kwargs):
+    from app.services.speaker_recognition import create_speaker_recognizer
+    return create_speaker_recognizer(*args, **kwargs)
 
 # WebSocket (optional)
 try:
