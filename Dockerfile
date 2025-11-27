@@ -1,6 +1,6 @@
 # Dockerfile for MP4toText Backend
-# Python 3.12 + FastAPI (Production Ready)
-# Build: 2025-11-26
+# Python 3.12 + FastAPI + Celery Worker (Production Ready)
+# Build: 2025-11-27
 
 FROM python:3.12-slim
 
@@ -14,7 +14,7 @@ ENV PYTHONUNBUFFERED=1 \
 # Set build arguments
 ARG DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies
+# Install system dependencies + supervisor
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     gcc \
@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     curl \
     ca-certificates \
+    supervisor \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
@@ -46,6 +47,9 @@ COPY --chown=appuser:appuser . .
 RUN mkdir -p /app/logs /app/uploads /app/storage && \
     chown -R appuser:appuser /app
 
+# Copy supervisor config
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
 # Switch to non-root user
 USER appuser
 
@@ -56,5 +60,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Start FastAPI server
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Start both FastAPI and Celery via supervisor
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
