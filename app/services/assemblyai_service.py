@@ -10,13 +10,26 @@ import time
 from typing import Dict, Any, Optional, List
 import assemblyai as aai
 from app.settings import get_settings
-from app.services.language_detector import get_whisper_detector
 from app.services.assemblyai.config import TranscriptionFeatures, SpeechUnderstandingConfig, LLMGatewayConfig
 from app.services.assemblyai.speech_understanding import SpeechUnderstandingParser
 from app.services.assemblyai.llm_gateway import LLMGatewayService
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+# Lazy import for language detector (requires torch)
+_whisper_detector = None
+
+def get_whisper_detector_lazy():
+    global _whisper_detector
+    if _whisper_detector is None:
+        try:
+            from app.services.language_detector import get_whisper_detector
+            _whisper_detector = get_whisper_detector()
+        except ImportError as e:
+            logger.warning(f"⚠️ Whisper language detector not available: {e}")
+            _whisper_detector = None
+    return _whisper_detector
 
 
 class AssemblyAIService:
@@ -46,10 +59,13 @@ class AssemblyAIService:
             aai.settings.api_key = self.api_key
             self._enabled = True
             
-            # Initialize language detector
+            # Initialize language detector (lazy - may not be available)
             try:
-                self.language_detector = get_whisper_detector()
-                logger.info("✅ AssemblyAI Full Service initialized")
+                self.language_detector = get_whisper_detector_lazy()
+                if self.language_detector:
+                    logger.info("✅ AssemblyAI Full Service initialized with language detection")
+                else:
+                    logger.info("✅ AssemblyAI Full Service initialized (no language detection)")
                 logger.info("   Features: ALL Speech Understanding + LLM Gateway")
             except Exception as e:
                 logger.warning(f"⚠️ Language detector not available: {e}")
