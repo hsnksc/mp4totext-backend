@@ -179,3 +179,4 @@ cryptography==41.0.7
 # kafka-python==2.0.2  # Apache Kafka
 
 librosa==0.10.2.post1
+yt-dlp==2024.12.6
