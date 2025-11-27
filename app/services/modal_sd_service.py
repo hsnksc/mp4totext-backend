@@ -1,8 +1,9 @@
 """
 Modal Stable Diffusion Service
-Transcript'ten görsel oluşturma - Modal.com T4 GPU
+Transcript'ten görsel oluşturma - Modal.com A10G GPU
 
-NOTE: Modal app defined in modal_sd_app.py (standalone, no backend dependencies)
+Uses deployed Modal app via modal.Function.lookup (NOT app.run())
+Modal app: transcript-image-generator
 """
 
 import logging
@@ -13,25 +14,16 @@ logger = logging.getLogger(__name__)
 
 # Modal imports (lazy loaded)
 modal = None
-app = None
-StableDiffusionInference = None
 
 try:
     import modal as modal_lib
     modal = modal_lib
-    
-    # Import from standalone modal app file (no backend dependencies)
-    # Add backend root to sys.path for Celery workers
-    import sys
-    from pathlib import Path
-    backend_root = Path(__file__).parent.parent.parent
-    if str(backend_root) not in sys.path:
-        sys.path.insert(0, str(backend_root))
-    
-    from modal_sd_app import app, StableDiffusionInference
-    
+    logger.info("✅ Modal library imported successfully")
 except ImportError as e:
-    logger.warning(f"⚠️ Modal library not installed or modal_sd_app.py not found: {e}")
+    logger.warning(f"⚠️ Modal library not installed: {e}")
+
+# Modal app name (must match deployed app)
+MODAL_APP_NAME = "transcript-image-generator"
 
 
 class ModalStableDiffusionService:
@@ -44,7 +36,7 @@ class ModalStableDiffusionService:
         self.modal_token = os.getenv("MODAL_TOKEN_ID")
         self.modal_secret = os.getenv("MODAL_TOKEN_SECRET")
         
-        if not modal or not app:
+        if not modal:
             logger.warning("⚠️ Modal library not installed")
             self._enabled = False
             return
@@ -55,6 +47,16 @@ class ModalStableDiffusionService:
         else:
             self._enabled = True
             logger.info("✅ Modal Stable Diffusion service initialized")
+    
+    def _get_inference_function(self):
+        """Get remote inference function from deployed Modal app"""
+        try:
+            # Lookup deployed Modal function
+            inference_cls = modal.Cls.lookup(MODAL_APP_NAME, "StableDiffusionInference")
+            return inference_cls()
+        except Exception as e:
+            logger.error(f"❌ Failed to lookup Modal function: {e}")
+            raise ValueError(f"Modal app '{MODAL_APP_NAME}' not found. Deploy with: modal deploy modal_sd_app.py")
     
     def is_enabled(self) -> bool:
         """Check if service is enabled"""
@@ -67,7 +69,7 @@ class ModalStableDiffusionService:
         seed: Optional[int] = None
     ) -> List[bytes]:
         """
-        Generate images using Modal
+        Generate images using deployed Modal app
         
         Args:
             prompt: Image generation prompt
@@ -80,18 +82,17 @@ class ModalStableDiffusionService:
         if not self._enabled:
             raise ValueError("Modal service not enabled - check credentials")
         
-        logger.info(f"🎨 Generating {num_images} image(s) on Modal...")
+        logger.info(f"🎨 Generating {num_images} image(s) on Modal SDXL...")
         logger.info(f"   Prompt: {prompt[:100]}...")
         
         try:
-            # Run app in context manager to hydrate functions
-            with app.run():
-                inference = StableDiffusionInference()
-                images = inference.generate.remote(
-                    prompt=prompt,
-                    batch_size=num_images,
-                    seed=seed
-                )
+            # Call deployed Modal function
+            inference = self._get_inference_function()
+            images = inference.generate.remote(
+                prompt=prompt,
+                batch_size=num_images,
+                seed=seed
+            )
             
             logger.info(f"✅ Generated {len(images)} image(s)")
             return images
@@ -120,18 +121,17 @@ class ModalStableDiffusionService:
         if not self._enabled:
             raise ValueError("Modal service not enabled - check credentials")
         
-        logger.info(f"🎨 [SYNC] Generating {num_images} image(s) on Modal...")
+        logger.info(f"🎨 [SYNC] Generating {num_images} image(s) on Modal SDXL...")
         logger.info(f"   Prompt: {prompt[:100]}...")
         
         try:
-            # Run app in context manager to hydrate functions
-            with app.run():
-                inference = StableDiffusionInference()
-                images = inference.generate.remote(
-                    prompt=prompt,
-                    batch_size=num_images,
-                    seed=seed
-                )
+            # Call deployed Modal function
+            inference = self._get_inference_function()
+            images = inference.generate.remote(
+                prompt=prompt,
+                batch_size=num_images,
+                seed=seed
+            )
             
             logger.info(f"✅ Generated {len(images)} image(s)")
             return images
@@ -176,13 +176,13 @@ class ModalStableDiffusionService:
         logger.info(f"   Quality: {'HIGH (50 steps)' if high_quality else 'STANDARD (25 steps)'}")
         
         try:
-            with app.run():
-                inference = StableDiffusionInference()
-                images = inference.generate_batch.remote(
-                    prompts=prompts,
-                    seeds=seeds,
-                    high_quality=high_quality
-                )
+            # Call deployed Modal function
+            inference = self._get_inference_function()
+            images = inference.generate_batch.remote(
+                prompts=prompts,
+                seeds=seeds,
+                high_quality=high_quality
+            )
             
             logger.info(f"✅ Generated {len(images)} images in batch")
             return images
@@ -213,9 +213,10 @@ class ModalStableDiffusionService:
         
         return {
             "status": "healthy",
-            "service": "Modal Stable Diffusion",
-            "model": MODEL_ID,
-            "gpu": "T4",
+            "service": "Modal Stable Diffusion SDXL",
+            "model": "stabilityai/stable-diffusion-xl-base-1.0",
+            "gpu": "A10G",
+            "app_name": MODAL_APP_NAME,
             "estimated_cost_per_image": "$0.01"
         }
 

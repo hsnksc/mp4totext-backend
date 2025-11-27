@@ -2,7 +2,8 @@
 Modal FLUX Service
 FLUX.1 image generation service - Ultra quality
 
-NOTE: Modal app defined in modal_flux_app.py (standalone, no backend dependencies)
+Uses deployed Modal app via modal.Cls.lookup (NOT app.run())
+Modal app: transcript-flux-generator
 """
 
 import logging
@@ -13,25 +14,16 @@ logger = logging.getLogger(__name__)
 
 # Modal imports (lazy loaded)
 modal = None
-app = None
-FluxInference = None
 
 try:
     import modal as modal_lib
     modal = modal_lib
-    
-    # Import from standalone modal app file
-    # Add backend root to sys.path for Celery workers
-    import sys
-    from pathlib import Path
-    backend_root = Path(__file__).parent.parent.parent
-    if str(backend_root) not in sys.path:
-        sys.path.insert(0, str(backend_root))
-    
-    from modal_flux_app import app, FluxInference
-    
+    logger.info("✅ Modal library imported successfully")
 except ImportError as e:
-    logger.warning(f"⚠️ Modal library not installed or modal_flux_app.py not found: {e}")
+    logger.warning(f"⚠️ Modal library not installed: {e}")
+
+# Modal app name (must match deployed app)
+MODAL_APP_NAME = "transcript-flux-generator"
 
 
 class ModalFluxService:
@@ -44,7 +36,7 @@ class ModalFluxService:
         self.modal_token = os.getenv("MODAL_TOKEN_ID")
         self.modal_secret = os.getenv("MODAL_TOKEN_SECRET")
         
-        if not modal or not app:
+        if not modal:
             logger.warning("⚠️ Modal library not installed")
             self._enabled = False
             return
@@ -55,6 +47,16 @@ class ModalFluxService:
         else:
             self._enabled = True
             logger.info("✅ Modal FLUX service initialized")
+    
+    def _get_inference_function(self):
+        """Get remote inference function from deployed Modal app"""
+        try:
+            # Lookup deployed Modal function
+            inference_cls = modal.Cls.lookup(MODAL_APP_NAME, "FluxInference")
+            return inference_cls()
+        except Exception as e:
+            logger.error(f"❌ Failed to lookup Modal FLUX function: {e}")
+            raise ValueError(f"Modal app '{MODAL_APP_NAME}' not found. Deploy with: modal deploy modal_flux_app.py")
     
     def is_enabled(self) -> bool:
         """Check if service is enabled"""
@@ -109,14 +111,14 @@ class ModalFluxService:
             logger.info(f"🎨 [FLUX] Generating {num_images} image(s) on Modal H100...")
             logger.info(f"📝 Prompt: {prompt[:100]}...")
             
-            with app.run():
-                inference = FluxInference()
-                images = inference.generate.remote(
-                    prompt=prompt,
-                    batch_size=num_images,
-                    seed=seed,
-                    guidance_scale=guidance_scale
-                )
+            # Call deployed Modal function
+            inference = self._get_inference_function()
+            images = inference.generate.remote(
+                prompt=prompt,
+                batch_size=num_images,
+                seed=seed,
+                guidance_scale=guidance_scale
+            )
             
             logger.info(f"✅ [FLUX] Generated {len(images)} image(s) successfully")
             return images
@@ -151,13 +153,13 @@ class ModalFluxService:
         try:
             logger.info(f"🎨 [FLUX BATCH] Generating {len(prompts)} images on Modal H100...")
             
-            with app.run():
-                inference = FluxInference()
-                images = inference.generate_batch.remote(
-                    prompts=prompts,
-                    seeds=seeds,
-                    guidance_scale=guidance_scale
-                )
+            # Call deployed Modal function
+            inference = self._get_inference_function()
+            images = inference.generate_batch.remote(
+                prompts=prompts,
+                seeds=seeds,
+                guidance_scale=guidance_scale
+            )
             
             logger.info(f"✅ [FLUX BATCH] Generated {len(images)} images successfully")
             
