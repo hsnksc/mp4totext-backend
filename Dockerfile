@@ -24,6 +24,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     supervisor \
+    libsndfile1 \
+    libsndfile1-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
