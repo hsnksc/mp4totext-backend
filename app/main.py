@@ -358,6 +358,52 @@ async def debug_processes() -> Dict[str, Any]:
             "error": str(e)
         }
     
+    # Test Redis connection
+    try:
+        import redis
+        from app.settings import get_settings
+        settings = get_settings()
+        broker_url = settings.CELERY_BROKER_URL
+        
+        # Parse Redis URL
+        r = redis.from_url(broker_url)
+        ping_result = r.ping()
+        
+        # Check queue length
+        queue_length = r.llen("celery")
+        
+        result["redis_test"] = {
+            "status": "connected",
+            "ping": ping_result,
+            "broker_url": broker_url[:50] + "..." if len(broker_url) > 50 else broker_url,
+            "celery_queue_length": queue_length
+        }
+    except Exception as e:
+        result["redis_test"] = {
+            "status": "error",
+            "error": str(e)
+        }
+    
+    # Test Celery broker connection
+    try:
+        from app.celery_app import celery_app
+        inspector = celery_app.control.inspect()
+        
+        # Get active tasks
+        active = inspector.active()
+        reserved = inspector.reserved()
+        
+        result["celery_broker_test"] = {
+            "status": "connected",
+            "active_tasks": active,
+            "reserved_tasks": reserved
+        }
+    except Exception as e:
+        result["celery_broker_test"] = {
+            "status": "error", 
+            "error": str(e)
+        }
+    
     return result
 
 
