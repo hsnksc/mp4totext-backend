@@ -358,7 +358,7 @@ async def debug_processes() -> Dict[str, Any]:
             "error": str(e)
         }
     
-    # Test Redis connection
+    # Test Redis connection and show ALL queues
     try:
         import redis
         from app.settings import get_settings
@@ -369,14 +369,20 @@ async def debug_processes() -> Dict[str, Any]:
         r = redis.from_url(broker_url)
         ping_result = r.ping()
         
-        # Check queue length
-        queue_length = r.llen("celery")
+        # Check ALL queue lengths
+        queues = {
+            "celery": r.llen("celery"),
+            "high": r.llen("high"),
+            "default": r.llen("default"),
+            "low": r.llen("low")
+        }
         
         result["redis_test"] = {
             "status": "connected",
             "ping": ping_result,
             "broker_url": broker_url[:50] + "..." if len(broker_url) > 50 else broker_url,
-            "celery_queue_length": queue_length
+            "queue_lengths": queues,
+            "total_pending": sum(queues.values())
         }
     except Exception as e:
         result["redis_test"] = {
@@ -405,6 +411,33 @@ async def debug_processes() -> Dict[str, Any]:
         }
     
     return result
+
+
+@app.post("/api/v1/debug/purge-queues")
+async def purge_queues():
+    """Purge all Celery queues - USE WITH CAUTION"""
+    try:
+        import redis
+        from app.settings import get_settings
+        settings = get_settings()
+        r = redis.from_url(settings.CELERY_BROKER_URL)
+        
+        # Get counts before purge
+        before = {
+            "celery": r.llen("celery"),
+            "high": r.llen("high"),
+            "default": r.llen("default")
+        }
+        
+        # Purge queues
+        r.delete("celery", "high", "default", "low")
+        
+        return {
+            "status": "purged",
+            "queues_cleared": before
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 
 # Error handlers
