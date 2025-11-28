@@ -377,6 +377,51 @@ async def delete_generated_image(
     return {"status": "success", "message": "Image deleted"}
 
 
+@router.get("/task/{task_id}")
+async def get_task_status(task_id: str):
+    """
+    Celery task durumunu kontrol et (debug endpoint)
+    
+    **Example:**
+    ```
+    GET /api/v1/images/task/a00ad7f4-9342-480e-ae10-f2a2ee343175
+    ```
+    """
+    from app.celery_app import celery_app
+    
+    try:
+        task = celery_app.AsyncResult(task_id)
+        
+        result = {
+            "task_id": task_id,
+            "status": task.status,
+            "ready": task.ready(),
+            "successful": task.successful() if task.ready() else None,
+            "failed": task.failed() if task.ready() else None,
+        }
+        
+        # Include result or error if available
+        if task.ready():
+            if task.successful():
+                result["result"] = str(task.result)[:500]  # Truncate
+            elif task.failed():
+                result["error"] = str(task.result)[:500]
+        
+        # Include traceback if failed
+        if task.failed():
+            result["traceback"] = task.traceback[:1000] if task.traceback else None
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"❌ Task status check error: {e}")
+        return {
+            "task_id": task_id,
+            "status": "ERROR",
+            "error": str(e)
+        }
+
+
 @router.get("/styles")
 async def get_available_styles():
     """
