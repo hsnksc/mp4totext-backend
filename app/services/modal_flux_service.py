@@ -51,9 +51,9 @@ class ModalFluxService:
     def _get_inference_function(self):
         """Get remote inference function from deployed Modal app"""
         try:
-            # Lookup deployed Modal function
-            inference_cls = modal.Cls.lookup(MODAL_APP_NAME, "FluxInference")
-            return inference_cls()
+            # Use Cls.from_name to access deployed Modal class
+            FluxClass = modal.Cls.from_name(MODAL_APP_NAME, "FluxInference")
+            return FluxClass()
         except Exception as e:
             logger.error(f"❌ Failed to lookup Modal FLUX function: {e}")
             raise ValueError(f"Modal app '{MODAL_APP_NAME}' not found. Deploy with: modal deploy modal_flux_app.py")
