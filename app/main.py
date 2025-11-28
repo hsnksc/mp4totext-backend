@@ -282,6 +282,7 @@ async def api_status() -> Dict[str, Any]:
     # Check Celery worker
     celery_status = "error"
     celery_workers = []
+    registered_tasks = []
     try:
         # Inspect active workers
         inspect = celery_app.control.inspect()
@@ -292,6 +293,13 @@ async def api_status() -> Dict[str, Any]:
             celery_workers = list(stats.keys())
         else:
             celery_status = "error"
+        
+        # Get registered tasks
+        registered = inspect.registered()
+        if registered:
+            for worker, tasks in registered.items():
+                registered_tasks = tasks
+                break
     except Exception as e:
         logger.warning(f"⚠️ Celery worker check failed: {e}")
         celery_status = "error"
@@ -307,11 +315,50 @@ async def api_status() -> Dict[str, Any]:
             "celery": {
                 "status": celery_status,
                 "workers": celery_workers,
+                "registered_tasks": registered_tasks,
                 "message": "Celery worker is running" if celery_status == "operational" else "⚠️ Celery worker is not running! Start it with: celery -A app.workers.transcription_worker worker --loglevel=info --pool=solo"
             }
         },
         "timestamp": datetime.now().isoformat()
     }
+
+
+@app.get("/api/v1/debug/processes")
+async def debug_processes() -> Dict[str, Any]:
+    """
+    Debug endpoint - running processes in container
+    """
+    import subprocess
+    import os
+    
+    result = {
+        "hostname": os.uname().nodename if hasattr(os, 'uname') else "unknown",
+        "pid": os.getpid(),
+        "processes": [],
+        "celery_import_test": None
+    }
+    
+    # List processes
+    try:
+        ps_output = subprocess.check_output(["ps", "aux"], text=True)
+        result["processes"] = ps_output.split("\n")[:20]  # First 20 lines
+    except Exception as e:
+        result["processes"] = [f"Error: {e}"]
+    
+    # Test celery import
+    try:
+        from app.workers.transcription_worker import generate_transcript_images
+        result["celery_import_test"] = {
+            "status": "success",
+            "task_name": generate_transcript_images.name
+        }
+    except Exception as e:
+        result["celery_import_test"] = {
+            "status": "error",
+            "error": str(e)
+        }
+    
+    return result
 
 
 # Error handlers
