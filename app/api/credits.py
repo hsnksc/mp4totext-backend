@@ -577,3 +577,141 @@ async def update_model_pricing_admin(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update model: {str(e)}"
         )
+
+
+# Schema for creating new AI model
+class AIModelCreate(BaseModel):
+    model_key: str
+    model_name: str
+    provider: str  # gemini, together, groq, openai
+    credit_multiplier: float = 1.0
+    api_cost_per_1m_input: Optional[float] = None
+    api_cost_per_1m_output: Optional[float] = None
+    description: Optional[str] = None
+    is_active: bool = True
+    is_default: bool = False
+
+
+@router.post("/admin/models", response_model=AIModelPricingResponse)
+async def create_model_admin(
+    model_data: AIModelCreate,
+    current_user: User = Depends(require_superuser),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new AI model - ADMIN ONLY
+    """
+    from app.models.ai_model_pricing import AIModelPricing
+    
+    try:
+        # Check if model_key already exists
+        existing = db.query(AIModelPricing).filter(
+            AIModelPricing.model_key == model_data.model_key
+        ).first()
+        
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Model with key '{model_data.model_key}' already exists"
+            )
+        
+        # If setting as default, unset others
+        if model_data.is_default:
+            db.query(AIModelPricing).update({"is_default": False})
+        
+        new_model = AIModelPricing(
+            model_key=model_data.model_key,
+            model_name=model_data.model_name,
+            provider=model_data.provider,
+            credit_multiplier=model_data.credit_multiplier,
+            api_cost_per_1m_input=model_data.api_cost_per_1m_input,
+            api_cost_per_1m_output=model_data.api_cost_per_1m_output,
+            description=model_data.description,
+            is_active=model_data.is_active,
+            is_default=model_data.is_default
+        )
+        
+        db.add(new_model)
+        db.commit()
+        db.refresh(new_model)
+        
+        logger.info(f"👮 Admin {current_user.username} created model: {new_model.model_name}")
+        return new_model
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Failed to create model: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create model: {str(e)}"
+        )
+
+
+class BulkModelCreate(BaseModel):
+    models: List[AIModelCreate]
+
+
+@router.post("/admin/models/bulk")
+async def bulk_create_models_admin(
+    data: BulkModelCreate,
+    current_user: User = Depends(require_superuser),
+    db: Session = Depends(get_db)
+):
+    """
+    Bulk create AI models - ADMIN ONLY
+    Skips existing models (by model_key)
+    """
+    from app.models.ai_model_pricing import AIModelPricing
+    
+    try:
+        created = 0
+        skipped = 0
+        errors = []
+        
+        for model_data in data.models:
+            # Check if exists
+            existing = db.query(AIModelPricing).filter(
+                AIModelPricing.model_key == model_data.model_key
+            ).first()
+            
+            if existing:
+                skipped += 1
+                continue
+            
+            try:
+                new_model = AIModelPricing(
+                    model_key=model_data.model_key,
+                    model_name=model_data.model_name,
+                    provider=model_data.provider,
+                    credit_multiplier=model_data.credit_multiplier,
+                    api_cost_per_1m_input=model_data.api_cost_per_1m_input,
+                    api_cost_per_1m_output=model_data.api_cost_per_1m_output,
+                    description=model_data.description,
+                    is_active=model_data.is_active,
+                    is_default=False  # Don't set default in bulk
+                )
+                db.add(new_model)
+                created += 1
+            except Exception as e:
+                errors.append(f"{model_data.model_key}: {str(e)}")
+        
+        db.commit()
+        
+        logger.info(f"👮 Admin {current_user.username} bulk created {created} models, skipped {skipped}")
+        
+        return {
+            "success": True,
+            "created": created,
+            "skipped": skipped,
+            "errors": errors
+        }
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Bulk create failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Bulk create failed: {str(e)}"
+        )
