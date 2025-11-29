@@ -168,3 +168,6 @@ class Transcription(Base):
         if self.lemur_custom_tasks:
             payload["custom_tasks"] = self.lemur_custom_tasks
         return payload or None
+    
+    # Relationships
+    sources = relationship("Source", back_populates="transcription", lazy="dynamic")
