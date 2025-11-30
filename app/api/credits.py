@@ -456,15 +456,18 @@ async def get_active_models(
     Get all active AI models with pricing information (PUBLIC)
     
     Returns list of available models sorted by credit multiplier (cheapest first)
+    Excludes Whisper models (audio transcription only, not for chat/AI tasks)
     """
     from app.models.ai_model_pricing import AIModelPricing
     
     try:
         models = db.query(AIModelPricing).filter(
-            AIModelPricing.is_active == True
+            AIModelPricing.is_active == True,
+            # Exclude Whisper models - they are for transcription only, not chat
+            ~AIModelPricing.model_key.ilike('%whisper%')
         ).order_by(AIModelPricing.credit_multiplier).all()
         
-        logger.info(f"📋 Returning {len(models)} active AI models")
+        logger.info(f"📋 Returning {len(models)} active AI models (whisper excluded)")
         return models
         
     except Exception as e:
