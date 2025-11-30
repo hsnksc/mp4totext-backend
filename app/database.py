@@ -63,6 +63,7 @@ def init_db() -> None:
         # Import all models here so they are registered with Base
         from app.models.user import User
         from app.models.transcription import Transcription
+        from app.models.source import Source
         
         Base.metadata.create_all(bind=engine)
         logger.info("✅ Database initialized successfully")
