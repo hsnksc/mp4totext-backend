@@ -302,9 +302,17 @@ Create a professional, engaging, and informative article that could be shared on
             base_prompt += "\n"
         base_prompt += "\nReference these videos where appropriate in your article.\n"
     
-    # Add custom instruction if provided
+    # Add custom instruction if provided - this OVERRIDES default language if user specifies differently
     if request.custom_instruction:
-        base_prompt += f"\n\n## SPECIAL INSTRUCTIONS FROM USER:\n{request.custom_instruction}\n"
+        base_prompt += f"""
+
+## 🎯 SPECIAL INSTRUCTIONS FROM USER (HIGHEST PRIORITY):
+**These instructions take precedence over all other guidelines, including language settings.**
+
+{request.custom_instruction}
+
+(If the user specifies a different language above, use THAT language instead of the default.)
+"""
     
     base_prompt += """
 
