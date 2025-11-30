@@ -197,18 +197,40 @@ Content to synthesize:
     
     # 5. Call AI service
     try:
+        result = None
+        
         if request.ai_provider == "openai":
-            from app.services.openai_cleaner_service import clean_with_openai
-            result = await clean_with_openai(full_prompt, model=request.ai_model)
+            from app.services.openai_cleaner_service import get_openai_cleaner
+            service = get_openai_cleaner()
+            if not service.is_enabled():
+                raise Exception("OpenAI service not configured")
+            response = service.clean_transcript(full_prompt)
+            result = response.get("cleaned_text", "")
+            
         elif request.ai_provider == "gemini":
-            from app.services.gemini_service import enhance_with_gemini
-            result = await enhance_with_gemini(full_prompt, model_key=request.ai_model)
+            from app.services.gemini_service import get_gemini_service
+            service = get_gemini_service()
+            if not service.is_enabled():
+                raise Exception("Gemini service not configured")
+            response = await service.enhance_text(full_prompt, language="en")
+            result = response.get("enhanced_text", "")
+            
         elif request.ai_provider == "together":
-            from app.services.together_service import process_with_together
-            result = await process_with_together(full_prompt, model=request.ai_model)
+            from app.services.together_service import get_together_service
+            service = get_together_service()
+            if not service.is_enabled():
+                raise Exception("Together AI service not configured")
+            response = service.clean_transcript(full_prompt)
+            result = response.get("cleaned_text", "")
+            
         elif request.ai_provider == "groq":
-            from app.services.groq_service import process_with_groq
-            result = await process_with_groq(full_prompt, model=request.ai_model)
+            from app.services.groq_service import get_groq_service
+            service = get_groq_service()
+            if not service.is_enabled():
+                raise Exception("Groq service not configured")
+            response = await service.enhance_text(full_prompt, language="en")
+            result = response.get("enhanced_text", "")
+            
         else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
