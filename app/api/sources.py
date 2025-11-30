@@ -3,7 +3,8 @@ Sources API Router
 Handles CRUD operations for user-generated Sources (Mix Up feature)
 """
 import logging
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -14,10 +15,68 @@ from app.auth.utils import get_current_active_user
 from app.models.user import User
 from app.models.source import Source
 from app.services.credit_service import get_credit_service
+from app.services.storage import get_storage_service
 from app.models.credit_transaction import OperationType
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/sources", tags=["sources"])
+
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def refresh_source_image_urls(source: Source) -> Source:
+    """
+    Refresh presigned URLs for all image items in a source.
+    MinIO presigned URLs expire after 1 hour, so we need to regenerate them.
+    """
+    if not source.source_items:
+        return source
+    
+    storage = get_storage_service()
+    if not storage.minio_enabled:
+        return source
+    
+    updated_items = []
+    for item in source.source_items:
+        if item.get("type") == "image" and item.get("metadata"):
+            metadata = item.get("metadata", {})
+            
+            # Extract filename from existing URL or use stored filename
+            image_url = metadata.get("imageUrl") or metadata.get("url")
+            filename = metadata.get("filename")
+            
+            # If no filename, try to extract from URL
+            if not filename and image_url:
+                # Extract object name from presigned URL
+                # URL pattern: https://minio.../mp4totext/filename.png?X-Amz-...
+                match = re.search(r'/mp4totext/([^?]+)', image_url)
+                if match:
+                    filename = match.group(1)
+            
+            # Generate fresh presigned URL if we have filename
+            if filename:
+                try:
+                    fresh_url = storage.minio_client.presigned_get_object(
+                        bucket_name=storage.bucket_name,
+                        object_name=filename,
+                        expires=timedelta(hours=1)
+                    )
+                    # Update metadata with fresh URL
+                    metadata["imageUrl"] = fresh_url
+                    metadata["url"] = fresh_url
+                    metadata["filename"] = filename  # Store filename for future refreshes
+                    item["metadata"] = metadata
+                    logger.debug(f"✅ Refreshed presigned URL for {filename}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to refresh URL for {filename}: {e}")
+        
+        updated_items.append(item)
+    
+    # Create a copy of source with updated items (don't modify original)
+    source.source_items = updated_items
+    return source
 
 
 # ============================================================================
@@ -108,8 +167,11 @@ async def get_user_sources(
     
     sources = query.order_by(Source.created_at.desc()).offset(skip).limit(limit).all()
     
+    # Refresh presigned URLs for image items
+    refreshed_sources = [refresh_source_image_urls(source) for source in sources]
+    
     logger.info(f"📋 User {current_user.username} fetched {len(sources)} sources")
-    return sources
+    return refreshed_sources
 
 
 @router.get("/{source_id}", response_model=SourceResponse)
@@ -131,6 +193,9 @@ async def get_source(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Source not found"
         )
+    
+    # Refresh presigned URLs for image items
+    source = refresh_source_image_urls(source)
     
     return source
 

@@ -336,6 +336,7 @@ async def get_generated_images(
                 "style": img.style,
                 "seed": img.seed,
                 "file_size": img.file_size,
+                "filename": img.filename,  # Include filename for URL refresh
                 "created_at": img.created_at.isoformat() if img.created_at else None
             }
             for img in images
