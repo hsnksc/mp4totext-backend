@@ -340,7 +340,31 @@ class GeminiService:
             # Initialize Groq (ultra-fast)
             from groq import Groq
             self.api_key = settings.GROQ_API_KEY
-            self.model_name = preferred_model if preferred_model else settings.GROQ_MODEL
+            
+            # Map frontend model keys to Groq API model names
+            # Frontend sends: "groq-openai/gpt-oss-20b" or "openai/gpt-oss-20b"
+            # Groq API expects: actual model ID like "llama-3.3-70b-versatile"
+            groq_model_mapping = {
+                # GPT-OSS models (OpenAI open-weight) - mapped to best available Groq model
+                "groq-openai/gpt-oss-20b": "llama-3.3-70b-versatile",
+                "openai/gpt-oss-20b": "llama-3.3-70b-versatile",
+                "groq-openai/gpt-oss-120b": "llama-3.3-70b-versatile",
+                "openai/gpt-oss-120b": "llama-3.3-70b-versatile",
+                # Llama models
+                "llama-3.3-70b-versatile": "llama-3.3-70b-versatile",
+                "llama-3.1-70b-versatile": "llama-3.1-70b-versatile",
+                "llama-3.1-8b-instant": "llama-3.1-8b-instant",
+                # Mixtral
+                "mixtral-8x7b-32768": "mixtral-8x7b-32768",
+            }
+            
+            # Get the actual Groq model name
+            if preferred_model:
+                self.model_name = groq_model_mapping.get(preferred_model, preferred_model)
+                if preferred_model != self.model_name:
+                    logger.info(f"🔄 Groq model mapped: {preferred_model} → {self.model_name}")
+            else:
+                self.model_name = settings.GROQ_MODEL or "llama-3.3-70b-versatile"
             
             # Set max_output_tokens for Groq models
             self.max_output_tokens = 8192  # Groq default (most models support 8K+)
