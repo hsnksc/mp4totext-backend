@@ -198,12 +198,14 @@ Content to synthesize:
     # 5. Call AI service
     try:
         result = None
+        logger.info(f"🤖 Calling AI: provider={request.ai_provider}, model={request.ai_model}")
         
         if request.ai_provider == "openai":
             from app.services.openai_cleaner_service import get_openai_cleaner
             service = get_openai_cleaner()
             if not service.is_enabled():
                 raise Exception("OpenAI service not configured")
+            logger.info("📡 Calling OpenAI...")
             response = service.clean_transcript(full_prompt)
             result = response.get("cleaned_text", "")
             
@@ -212,6 +214,7 @@ Content to synthesize:
             service = get_gemini_service()
             if not service.is_enabled():
                 raise Exception("Gemini service not configured")
+            logger.info("📡 Calling Gemini...")
             response = await service.enhance_text(full_prompt, language="en")
             result = response.get("enhanced_text", "")
             
@@ -220,6 +223,7 @@ Content to synthesize:
             service = get_together_service()
             if not service.is_enabled():
                 raise Exception("Together AI service not configured")
+            logger.info("📡 Calling Together AI...")
             response = service.clean_transcript(full_prompt)
             result = response.get("cleaned_text", "")
             
@@ -228,6 +232,7 @@ Content to synthesize:
             service = get_groq_service()
             if not service.is_enabled():
                 raise Exception("Groq service not configured")
+            logger.info("📡 Calling Groq...")
             response = await service.enhance_text(full_prompt, language="en")
             result = response.get("enhanced_text", "")
             
@@ -239,9 +244,13 @@ Content to synthesize:
         
         if not result:
             raise Exception("AI returned empty result")
+        
+        logger.info(f"✅ AI response received: {len(result)} chars")
             
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"❌ AI processing failed: {e}")
+        logger.error(f"❌ AI processing failed: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"AI processing failed: {str(e)}"
