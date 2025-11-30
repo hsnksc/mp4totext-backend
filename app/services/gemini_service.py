@@ -1996,22 +1996,21 @@ Your job is to EXACTLY follow the user's instructions and produce the requested 
 
 Return pure JSON, no markdown blocks."""
             
-            logger.info("📡 Calling Gemini API with custom prompt (structured output)...")
+            logger.info("📡 Calling Gemini API with custom prompt...")
             
-            # Use client.beta.chat.completions.parse() with Pydantic model
-            completion = self.client.beta.chat.completions.parse(
+            # Use standard chat.completions.create() for Gemini (beta.parse not supported)
+            completion = self.client.chat.completions.create(
                 model=self.model_name,
                 messages=[
                     {"role": "system", "content": "You are a versatile AI assistant that processes text according to user instructions. Return structured JSON response."},
                     {"role": "user", "content": full_prompt}
                 ],
                 temperature=0.6,  # Allow more creativity for custom prompts
-                max_tokens=8192,
-                response_format=CustomPromptResponse  # Pydantic model
+                max_tokens=8192
             )
             
             # Check if response is valid
-            if not completion.choices or not completion.choices[0].message.parsed:
+            if not completion.choices or not completion.choices[0].message.content:
                 logger.error("❌ Gemini custom prompt returned empty response")
                 return {
                     "processed_text": text,
@@ -2025,16 +2024,39 @@ Return pure JSON, no markdown blocks."""
                     "error": "Empty response from API"
                 }
             
-            # Get parsed Pydantic object
-            result = completion.choices[0].message.parsed
+            # Parse JSON from response content
+            response_text = completion.choices[0].message.content.strip()
+            logger.info(f"📥 Raw Gemini response (first 200 chars): {response_text[:200]}...")
+            
+            # Clean markdown code blocks if present
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.startswith("```"):
+                response_text = response_text[3:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            response_text = response_text.strip()
+            
+            import json
+            try:
+                result = json.loads(response_text)
+            except json.JSONDecodeError as je:
+                logger.warning(f"⚠️ JSON parse failed, using raw text: {je}")
+                # If JSON parse fails, treat entire response as processed_text
+                result = {
+                    "processed_text": response_text,
+                    "metadata": {"word_count": len(response_text.split()), "processing_note": "Raw response (JSON parse failed)"}
+                }
+            
             logger.info(f"✅ Gemini custom processing response parsed successfully")
             
             # Convert to dict and add metadata
+            processed_text = result.get("processed_text", response_text)
             result_dict = {
-                "processed_text": result.processed_text,
-                "metadata": result.metadata,
+                "processed_text": processed_text,
+                "metadata": result.get("metadata", {}),
                 "original_length": len(text),
-                "processed_length": len(result.processed_text),
+                "processed_length": len(processed_text),
                 "model_used": self.model_name,
                 "language": language,
                 "custom_prompt_used": custom_prompt[:100] + "..." if len(custom_prompt) > 100 else custom_prompt
