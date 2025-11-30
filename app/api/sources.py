@@ -170,30 +170,107 @@ async def execute_mix_up(
             detail=f"Insufficient credits. Required: {required_credits:.2f}, Available: {current_user.credits:.2f}"
         )
     
-    # 3. Prepare content for AI
-    combined_content = ""
-    for i, item in enumerate(request.source_items, 1):
-        combined_content += f"\n\n--- [{item.type.upper()}] {item.title} ---\n"
-        combined_content += item.content
+    # 3. Prepare content for AI - separate text and media
+    text_content = ""
+    image_items = []
+    video_items = []
     
-    # 4. Create prompt
-    base_prompt = """You are an expert content synthesizer. Analyze the following content pieces and create a comprehensive, well-structured document that:
+    for i, item in enumerate(request.source_items, 1):
+        if item.type == "image":
+            # Get URL from metadata (could be url or imageUrl)
+            img_url = None
+            if item.metadata:
+                img_url = item.metadata.get("imageUrl") or item.metadata.get("url")
+            image_items.append({
+                "title": item.title,
+                "url": img_url,
+                "style": item.metadata.get("style") if item.metadata else None,
+                "prompt": item.content[:200] if item.content else ""
+            })
+        elif item.type == "video":
+            video_items.append({
+                "title": item.title,
+                "url": item.metadata.get("url") if item.metadata else None,
+                "duration": item.metadata.get("duration") if item.metadata else None
+            })
+        else:
+            text_content += f"\n\n### {i}. {item.title} ({item.type.upper()})\n"
+            text_content += item.content
+    
+    # 4. Create comprehensive prompt for shareable content
+    base_prompt = f"""You are an expert content creator and researcher. Your task is to create a comprehensive, well-researched, and shareable article based on the provided content.
 
-1. Identifies key themes and connections between the pieces
-2. Synthesizes the information into a coherent narrative
-3. Highlights important insights and conclusions
-4. Organizes the content in a logical, easy-to-follow structure
-5. Uses appropriate headings, bullet points, and formatting
+## YOUR MISSION:
+Create a professional, engaging, and informative article that could be shared on social media, blogs, or professional platforms.
 
-The output should be professional, informative, and valuable to the reader.
+## CONTENT CREATION GUIDELINES:
 
-Content to synthesize:
+### 1. STRUCTURE (Use Markdown formatting)
+- Start with an engaging **title** (# heading)
+- Write a compelling **introduction** that hooks the reader
+- Organize into clear **sections** with descriptive headings (## and ###)
+- Include a **summary/conclusion** with key takeaways
+- Add **bullet points** for lists and key facts
+
+### 2. CONTENT QUALITY
+- **Synthesize** all provided information into a coherent narrative
+- **Expand** on key points with additional context and explanations
+- **Connect** different pieces of information logically
+- **Highlight** important insights, statistics, and conclusions
+- Make it **educational** and **valuable** to readers
+
+### 3. WRITING STYLE
+- Professional yet accessible tone
+- Clear and concise language
+- Engaging and reader-friendly
+- Use transitions between sections
+- Include relevant examples when possible
+
+### 4. FORMATTING FOR SHARING
+- Use emojis sparingly but effectively (📌 💡 ⚡ 🔑 etc.)
+- Include quotable sentences that could be shared
+- Add section dividers for visual clarity
+- Keep paragraphs digestible (3-5 sentences max)
+
+### 5. ENHANCEMENTS
+- If there are factual claims, acknowledge them
+- Suggest areas for further research
+- Include actionable insights where applicable
+- Make the content timeless when possible
+
+## SOURCE CONTENT TO SYNTHESIZE:
+{text_content}
+"""
+
+    # Add media references if present
+    if image_items:
+        base_prompt += f"\n\n## VISUAL CONTENT ({len(image_items)} images):\n"
+        for img in image_items:
+            base_prompt += f"- 🖼️ **{img['title']}**: {img['prompt']}\n"
+        base_prompt += "\nMention these visuals appropriately in your article where relevant.\n"
+    
+    if video_items:
+        base_prompt += f"\n\n## VIDEO CONTENT ({len(video_items)} videos):\n"
+        for vid in video_items:
+            base_prompt += f"- 🎬 **{vid['title']}**"
+            if vid.get('duration'):
+                base_prompt += f" ({vid['duration']})"
+            base_prompt += "\n"
+        base_prompt += "\nReference these videos where appropriate in your article.\n"
+    
+    # Add custom instruction if provided
+    if request.custom_instruction:
+        base_prompt += f"\n\n## SPECIAL INSTRUCTIONS FROM USER:\n{request.custom_instruction}\n"
+    
+    base_prompt += """
+
+## OUTPUT FORMAT:
+Write the article in Markdown format. Make it comprehensive (at least 500 words for complex topics), well-structured, and ready to be shared on professional platforms.
+
+BEGIN YOUR ARTICLE:
 """
     
-    if request.custom_instruction:
-        base_prompt += f"\n\nAdditional instructions: {request.custom_instruction}\n\n"
-    
-    full_prompt = base_prompt + combined_content
+    full_prompt = base_prompt
     
     # 5. Call AI service
     try:
