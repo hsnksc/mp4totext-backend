@@ -342,20 +342,27 @@ class GeminiService:
             self.api_key = settings.GROQ_API_KEY
             
             # Map frontend model keys to Groq API model names
-            # Frontend sends: "groq-openai/gpt-oss-20b" or "openai/gpt-oss-20b"
-            # Groq API expects: actual model ID like "llama-3.3-70b-versatile"
+            # Frontend may send prefixed keys like "groq-openai/..." 
+            # Groq API expects clean model IDs
             groq_model_mapping = {
-                # GPT-OSS models (OpenAI open-weight) - mapped to best available Groq model
-                "groq-openai/gpt-oss-20b": "llama-3.3-70b-versatile",
-                "openai/gpt-oss-20b": "llama-3.3-70b-versatile",
-                "groq-openai/gpt-oss-120b": "llama-3.3-70b-versatile",
-                "openai/gpt-oss-120b": "llama-3.3-70b-versatile",
-                # Llama models
+                # Frontend prefixed → Groq API actual
+                "groq-openai/gpt-oss-20b": "openai/gpt-oss-20b",
+                "groq-openai/gpt-oss-120b": "openai/gpt-oss-120b",
+                "groq-llama-3.3-70b-versatile": "llama-3.3-70b-versatile",
+                "groq-llama-3.1-8b-instant": "llama-3.1-8b-instant",
+                # Clean keys (already correct)
+                "openai/gpt-oss-20b": "openai/gpt-oss-20b",
+                "openai/gpt-oss-120b": "openai/gpt-oss-120b",
                 "llama-3.3-70b-versatile": "llama-3.3-70b-versatile",
-                "llama-3.1-70b-versatile": "llama-3.1-70b-versatile",
                 "llama-3.1-8b-instant": "llama-3.1-8b-instant",
-                # Mixtral
-                "mixtral-8x7b-32768": "mixtral-8x7b-32768",
+                # Llama 4 models
+                "meta-llama/llama-4-scout-17b-16e-instruct": "meta-llama/llama-4-scout-17b-16e-instruct",
+                "meta-llama/llama-4-maverick-17b-128e-instruct": "meta-llama/llama-4-maverick-17b-128e-instruct",
+                # Qwen
+                "qwen/qwen3-32b": "qwen/qwen3-32b",
+                # Kimi
+                "moonshotai/kimi-k2-instruct": "moonshotai/kimi-k2-instruct",
+                "moonshotai/kimi-k2-instruct-0905": "moonshotai/kimi-k2-instruct-0905",
             }
             
             # Get the actual Groq model name
