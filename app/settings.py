@@ -45,14 +45,16 @@ class Settings(BaseSettings):
     REDIS_PASSWORD: Optional[str] = Field(default=None, env="REDIS_PASSWORD")
     
     # =============================================================================
-    # STORAGE (MinIO / S3)
+    # STORAGE (Cloudflare R2 / S3-compatible)
     # =============================================================================
-    STORAGE_ENDPOINT: str = Field(default="localhost:9000", env="STORAGE_ENDPOINT")
-    STORAGE_ACCESS_KEY: str = Field(default="minioadmin", env="STORAGE_ACCESS_KEY")
-    STORAGE_SECRET_KEY: str = Field(default="minioadmin", env="STORAGE_SECRET_KEY")
-    STORAGE_BUCKET: str = Field(default="mp4totext", env="STORAGE_BUCKET")
-    STORAGE_REGION: str = Field(default="us-east-1", env="STORAGE_REGION")
-    STORAGE_SECURE: bool = Field(default=False, env="STORAGE_SECURE")
+    STORAGE_ACCOUNT_ID: str = Field(default="", env="STORAGE_ACCOUNT_ID")  # Cloudflare Account ID
+    STORAGE_ENDPOINT: str = Field(default="", env="STORAGE_ENDPOINT")  # Full endpoint URL (optional)
+    STORAGE_ACCESS_KEY: str = Field(default="", env="STORAGE_ACCESS_KEY")  # R2 Access Key ID
+    STORAGE_SECRET_KEY: str = Field(default="", env="STORAGE_SECRET_KEY")  # R2 Secret Access Key
+    STORAGE_BUCKET: str = Field(default="mp4totext", env="STORAGE_BUCKET")  # Bucket name
+    STORAGE_PUBLIC_URL: str = Field(default="", env="STORAGE_PUBLIC_URL")  # Public URL base (e.g., https://pub-xxx.r2.dev)
+    STORAGE_REGION: str = Field(default="auto", env="STORAGE_REGION")
+    STORAGE_SECURE: bool = Field(default=True, env="STORAGE_SECURE")
     
     # =============================================================================
     # AI SERVICES

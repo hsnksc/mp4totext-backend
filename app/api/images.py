@@ -303,25 +303,21 @@ async def get_generated_images(
         GeneratedImage.is_active == True
     ).order_by(GeneratedImage.created_at.desc()).all()
     
-    # Generate fresh presigned URLs (1 hour expiry) from MinIO
-    from datetime import timedelta
+    # Generate fresh URLs from R2 (public URLs have no expiration!)
     storage = get_storage_service()
     
     def get_fresh_url(img: GeneratedImage) -> str:
-        """Generate fresh presigned URL from MinIO"""
+        """Generate fresh public URL from R2"""
         if not img.filename:
             return img.image_url or ""
         
         try:
-            fresh_url = storage.minio_client.presigned_get_object(
-                bucket_name=storage.bucket_name,
-                object_name=img.filename,
-                expires=timedelta(hours=1)  # MinIO expects timedelta
-            )
-            logger.info(f"✅ Generated fresh URL for {img.filename}")
+            # Use public URL for R2 (permanent, no expiration!)
+            fresh_url = storage.get_public_url(img.filename)
+            logger.info(f"✅ Generated public URL for {img.filename}")
             return fresh_url
         except Exception as e:
-            logger.error(f"❌ Failed to generate presigned URL for {img.filename}: {e}")
+            logger.error(f"❌ Failed to generate URL for {img.filename}: {e}")
             # Fallback to stored URL
             return img.image_url or ""
     

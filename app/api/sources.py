@@ -28,14 +28,15 @@ router = APIRouter(prefix="/api/v1/sources", tags=["sources"])
 
 def refresh_source_image_urls(source: Source) -> Source:
     """
-    Refresh presigned URLs for all image items in a source.
-    MinIO presigned URLs expire after 1 hour, so we need to regenerate them.
+    Refresh URLs for all image items in a source.
+    For R2 public buckets, URLs are permanent (no expiration).
+    For private buckets, generate presigned URLs.
     """
     if not source.source_items:
         return source
     
     storage = get_storage_service()
-    if not storage.minio_enabled:
+    if not storage.r2_enabled:
         return source
     
     updated_items = []
@@ -49,28 +50,30 @@ def refresh_source_image_urls(source: Source) -> Source:
             
             # If no filename, try to extract from URL
             if not filename and image_url:
-                # Extract object name from presigned URL
-                # URL pattern: https://minio.../mp4totext/filename.png?X-Amz-...
-                match = re.search(r'/mp4totext/([^?]+)', image_url)
+                # Extract object name from URL patterns:
+                # R2: https://pub-xxx.r2.dev/filename.png
+                # MinIO: https://minio.../mp4totext/filename.png?X-Amz-...
+                # Try R2 pattern first (no query params)
+                match = re.search(r'r2\.dev/([^?]+)', image_url)
+                if not match:
+                    # Try MinIO pattern
+                    match = re.search(r'/mp4totext/([^?]+)', image_url)
                 if match:
                     filename = match.group(1)
             
-            # Generate fresh presigned URL if we have filename
+            # Generate fresh URL if we have filename
             if filename:
                 try:
-                    fresh_url = storage.minio_client.presigned_get_object(
-                        bucket_name=storage.bucket_name,
-                        object_name=filename,
-                        expires=timedelta(hours=1)
-                    )
+                    # Use public URL for R2 (permanent, no expiration!)
+                    fresh_url = storage.get_public_url(filename)
                     # Update metadata with fresh URL
                     metadata["imageUrl"] = fresh_url
                     metadata["url"] = fresh_url
                     metadata["filename"] = filename  # Store filename for future refreshes
                     item["metadata"] = metadata
-                    logger.debug(f"✅ Refreshed presigned URL for {filename}")
+                    logger.debug(f"✅ Generated public URL for {filename}")
                 except Exception as e:
-                    logger.warning(f"⚠️ Failed to refresh URL for {filename}: {e}")
+                    logger.warning(f"⚠️ Failed to generate URL for {filename}: {e}")
         
         updated_items.append(item)
     
