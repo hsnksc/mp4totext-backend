@@ -784,8 +784,14 @@ async def apply_custom_prompt(
         
         return TranscriptionResponse.from_orm(transcription)
         
+    except HTTPException:
+        # Re-raise HTTP exceptions (like 402 Payment Required)
+        raise
     except Exception as e:
-        logger.error(f"Custom prompt application failed: {str(e)}")
+        import traceback
+        error_traceback = traceback.format_exc()
+        logger.error(f"❌ Custom prompt application failed: {str(e)}")
+        logger.error(f"❌ Full traceback:\n{error_traceback}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to apply custom prompt: {str(e)}"
