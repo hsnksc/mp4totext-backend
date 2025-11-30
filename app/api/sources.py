@@ -197,9 +197,53 @@ async def execute_mix_up(
             text_content += f"\n\n### {i}. {item.title} ({item.type.upper()})\n"
             text_content += item.content
     
-    # 4. Create comprehensive prompt for shareable content
-    base_prompt = f"""You are an expert content creator and researcher. Your task is to create a comprehensive, well-researched, and shareable article based on the provided content.
+    # 4a. Get transcription language if transcription_id is provided
+    content_language = "en"  # Default to English
+    language_instruction = ""
+    
+    if request.transcription_id:
+        from app.models.transcription import Transcription
+        transcription = db.query(Transcription).filter(
+            Transcription.id == request.transcription_id,
+            Transcription.user_id == current_user.id
+        ).first()
+        
+        if transcription and transcription.language:
+            content_language = transcription.language
+            logger.info(f"📝 Using transcription language: {content_language}")
+    
+    # Map language codes to full names for better AI understanding
+    language_names = {
+        "tr": "Turkish (Türkçe)",
+        "en": "English",
+        "de": "German (Deutsch)",
+        "fr": "French (Français)",
+        "es": "Spanish (Español)",
+        "it": "Italian (Italiano)",
+        "pt": "Portuguese (Português)",
+        "ru": "Russian (Русский)",
+        "ar": "Arabic (العربية)",
+        "zh": "Chinese (中文)",
+        "ja": "Japanese (日本語)",
+        "ko": "Korean (한국어)",
+    }
+    
+    language_name = language_names.get(content_language, content_language)
+    
+    # Only add language instruction if NOT English and no custom instruction overrides it
+    if content_language != "en":
+        language_instruction = f"""
+## ⚠️ CRITICAL: OUTPUT LANGUAGE
+**You MUST write the ENTIRE article in {language_name}.**
+- All headings, paragraphs, and content must be in {language_name}
+- Only exception: technical terms or proper nouns may remain in original language
+- This is the source content's original language - maintain it throughout
 
+"""
+    
+    # 4b. Create comprehensive prompt for shareable content
+    base_prompt = f"""You are an expert content creator and researcher. Your task is to create a comprehensive, well-researched, and shareable article based on the provided content.
+{language_instruction}
 ## YOUR MISSION:
 Create a professional, engaging, and informative article that could be shared on social media, blogs, or professional platforms.
 
