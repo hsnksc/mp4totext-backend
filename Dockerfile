@@ -48,7 +48,14 @@ RUN pip install --no-cache-dir \
     pydantic==2.5.0 \
     pydantic-settings==2.1.0
 
-# Install remaining dependencies
+# Install PyTorch CPU and Whisper with pre-built wheels (avoid source build timeout)
+RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu \
+    torch==2.5.1+cpu \
+    torchaudio==2.5.1+cpu \
+    triton==3.1.0 \
+    && pip install --no-cache-dir openai-whisper==20240930
+
+# Install remaining dependencies (skip already installed packages)
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
