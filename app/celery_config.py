@@ -18,6 +18,26 @@ except ImportError:
     print("Warning: New config system not available, using legacy config")
 
 
+def _ensure_models_loaded():
+    """
+    Ensure all SQLAlchemy models are loaded before Celery tasks run.
+    This fixes the 'Source' not found error in relationships.
+    """
+    try:
+        # Import all models to register them with SQLAlchemy
+        from app.models.user import User
+        from app.models.transcription import Transcription
+        from app.models.source import Source
+        from app.models.credit_transaction import CreditTransaction
+        from app.models.credit_pricing import CreditPricing
+        from app.models.ai_model_pricing import AIModelPricing
+        from app.models.generated_image import GeneratedImage
+        from app.models.generated_video import GeneratedVideo
+        print("✅ All SQLAlchemy models loaded successfully")
+    except Exception as e:
+        print(f"⚠️ Error loading models: {e}")
+
+
 def get_celery_app():
     """
     Get Celery app with environment-based configuration
@@ -78,6 +98,9 @@ def get_celery_app():
         }
         
         print("⚠️ Using legacy Celery configuration")
+    
+    # Ensure all models are loaded for SQLAlchemy relationships
+    _ensure_models_loaded()
     
     return celery_app
 
