@@ -5,7 +5,7 @@ Credit API endpoints - User credit management
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from datetime import datetime
 
 from app.database import get_db
