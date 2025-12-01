@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from app.database import SessionLocal
 from app.models.user import User
+from app.models.source import Source  # Import Source to resolve relationship
 from app.auth.utils import get_password_hash
 
 def create_admin_user(username: str = "admin", email: str = "admin@mp4totext.com", password: str = "admin123"):
