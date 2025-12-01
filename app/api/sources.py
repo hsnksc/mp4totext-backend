@@ -26,9 +26,9 @@ router = APIRouter(prefix="/api/v1/sources", tags=["sources"])
 # HELPER FUNCTIONS
 # ============================================================================
 
-def refresh_source_image_urls(source: Source) -> Source:
+def refresh_source_media_urls(source: Source) -> Source:
     """
-    Refresh URLs for all image items in a source.
+    Refresh URLs for all image and video items in a source.
     For R2 public buckets, URLs are permanent (no expiration).
     For private buckets, generate presigned URLs.
     """
@@ -41,45 +41,56 @@ def refresh_source_image_urls(source: Source) -> Source:
     
     updated_items = []
     for item in source.source_items:
-        if item.get("type") == "image" and item.get("metadata"):
-            metadata = item.get("metadata", {})
-            
-            # Extract filename from existing URL or use stored filename
-            image_url = metadata.get("imageUrl") or metadata.get("url")
+        item_type = item.get("type")
+        metadata = item.get("metadata", {})
+        
+        # Handle both images and videos
+        if item_type in ("image", "video") and metadata:
+            # Get URL and filename from metadata
+            media_url = metadata.get("imageUrl") or metadata.get("url") or metadata.get("videoUrl")
             filename = metadata.get("filename")
             
             # If no filename, try to extract from URL
-            if not filename and image_url:
+            if not filename and media_url:
                 # Extract object name from URL patterns:
-                # R2: https://pub-xxx.r2.dev/filename.png
+                # R2: https://xxx.r2.cloudflarestorage.com/bucket/filename.mp4
+                # R2 presigned: has ?X-Amz-... params
                 # MinIO: https://minio.../mp4totext/filename.png?X-Amz-...
-                # Try R2 pattern first (no query params)
-                match = re.search(r'r2\.dev/([^?]+)', image_url)
+                
+                # Try to extract filename from various URL patterns
+                match = re.search(r'r2\.dev/([^?]+)', media_url)
                 if not match:
-                    # Try MinIO pattern
-                    match = re.search(r'/mp4totext/([^?]+)', image_url)
+                    match = re.search(r'r2\.cloudflarestorage\.com/[^/]+/([^?]+)', media_url)
+                if not match:
+                    match = re.search(r'/mp4totext/([^?]+)', media_url)
                 if match:
                     filename = match.group(1)
             
             # Generate fresh URL if we have filename
             if filename:
                 try:
-                    # Use public URL for R2 (permanent, no expiration!)
                     fresh_url = storage.get_public_url(filename)
                     # Update metadata with fresh URL
-                    metadata["imageUrl"] = fresh_url
+                    if item_type == "image":
+                        metadata["imageUrl"] = fresh_url
+                    elif item_type == "video":
+                        metadata["videoUrl"] = fresh_url
                     metadata["url"] = fresh_url
-                    metadata["filename"] = filename  # Store filename for future refreshes
+                    metadata["filename"] = filename
                     item["metadata"] = metadata
-                    logger.debug(f"✅ Generated public URL for {filename}")
+                    logger.debug(f"✅ Generated URL for {item_type}: {filename}")
                 except Exception as e:
                     logger.warning(f"⚠️ Failed to generate URL for {filename}: {e}")
         
         updated_items.append(item)
     
-    # Create a copy of source with updated items (don't modify original)
     source.source_items = updated_items
     return source
+
+
+# Backwards compatibility alias
+def refresh_source_image_urls(source: Source) -> Source:
+    return refresh_source_media_urls(source)
 
 
 # ============================================================================
