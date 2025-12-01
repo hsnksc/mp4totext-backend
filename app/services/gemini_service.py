@@ -2610,55 +2610,92 @@ TRANSKRİPSİYON METNİ:
         num_questions: int,
         prompt: str
     ) -> Dict[str, Any]:
-        """Gemini implementation of exam question generation with Pydantic structured output"""
-        logger.info("📡 Calling Gemini API for exam questions (structured output)...")
+        """Gemini implementation of exam question generation using JSON parsing"""
+        import json
+        import re
         
-        # Use client.beta.chat.completions.parse() with Pydantic model
-        completion = self.client.beta.chat.completions.parse(
-            model=self.model_name,
-            messages=[
-                {"role": "system", "content": "You are an educational expert. Return structured JSON response."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.7,
-            max_tokens=8192,
-            response_format=ExamQuestionsResponse  # Pydantic model
-        )
+        logger.info("📡 Calling Gemini API for exam questions...")
         
-        # Check if response is valid
-        if not completion.choices or not completion.choices[0].message.parsed:
-            logger.error("❌ Gemini exam questions returned empty response")
+        try:
+            # Add explicit JSON instruction to prompt
+            enhanced_prompt = prompt + "\n\nCRITICAL: You MUST respond with valid JSON only. No markdown code blocks, no explanations. Start with { and end with }."
+            
+            # Use standard chat.completions.create() - Gemini OpenAI-compatible API
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are an educational expert. You ALWAYS respond with pure JSON only. No markdown code blocks, no explanations. Just raw JSON starting with { and ending with }."
+                    },
+                    {
+                        "role": "user",
+                        "content": enhanced_prompt
+                    }
+                ],
+                temperature=0.7,
+                max_tokens=8192
+            )
+            
+            response_text = response.choices[0].message.content.strip()
+            logger.info(f"✅ Gemini exam questions response received (length: {len(response_text)} chars)")
+            logger.debug(f"📄 Raw Gemini response: {response_text[:200]}...")
+            
+            # Clean markdown code blocks and extract JSON
+            response_text = re.sub(r'^```json\s*', '', response_text)
+            response_text = re.sub(r'^```\s*', '', response_text)
+            response_text = re.sub(r'\s*```$', '', response_text)
+            response_text = response_text.strip()
+            
+            # Extract JSON if wrapped in text
+            json_match = re.search(r'\{[\s\S]*\}', response_text)
+            if json_match:
+                response_text = json_match.group(0)
+                logger.debug(f"📝 Extracted JSON from response")
+            
+            try:
+                result = json.loads(response_text)
+                logger.info(f"✅ Successfully parsed Gemini JSON response")
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ JSON parsing failed: {e}")
+                logger.error(f"📄 Failed response: {response_text[:500]}...")
+                result = {
+                    "questions": [],
+                    "total_questions": 0,
+                    "language": language,
+                    "error": f"JSON parsing error: {str(e)}",
+                    "raw_response": response_text[:500]
+                }
+            
+            # Validate structure
+            if "questions" not in result or not isinstance(result["questions"], list):
+                logger.error("❌ Invalid questions structure in Gemini response")
+                result = {
+                    "questions": [],
+                    "total_questions": 0,
+                    "language": language,
+                    "error": "Invalid question format in response"
+                }
+            
+            # Add metadata
+            result["model_used"] = self.model_name
+            result["generated_at"] = "now"
+            result["total_questions"] = len(result.get("questions", []))
+            
+            logger.info(f"✅ Gemini generated {result['total_questions']} exam questions")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Gemini exam question error: {e}")
+            import traceback
+            logger.error(f"🔍 Traceback: {traceback.format_exc()}")
             return {
                 "questions": [],
                 "total_questions": 0,
                 "language": language,
-                "error": "API boş yanıt döndü"
+                "error": str(e),
+                "model_used": self.model_name
             }
-        
-        # Get parsed Pydantic object
-        result = completion.choices[0].message.parsed
-        logger.info(f"✅ Gemini exam questions parsed successfully")
-        
-        # Convert to dict and add metadata
-        result_dict = {
-            "questions": [
-                {
-                    "question": q.question,
-                    "options": q.options,
-                    "correct_answer": q.correct_answer,
-                    "explanation": q.explanation,
-                    "difficulty": q.difficulty
-                }
-                for q in result.questions
-            ],
-            "total_questions": result.total_questions,
-            "language": language,
-            "model_used": self.model_name,
-            "generated_at": "now"
-        }
-        
-        logger.info(f"✅ Gemini generated {len(result_dict['questions'])} exam questions")
-        return result_dict
     
     async def _generate_exam_questions_groq(
         self,
