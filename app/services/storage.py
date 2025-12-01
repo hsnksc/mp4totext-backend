@@ -161,27 +161,30 @@ class FileStorageService:
     def get_public_url(self, filename: str) -> str:
         """
         Get public URL for a file in R2
-        R2 public buckets have permanent URLs (no expiration!)
+        Uses presigned URL with 7 day expiry (R2 max) for reliability
         
         Args:
             filename: Object name in R2
             
         Returns:
-            Public URL
+            Public URL or presigned URL
         """
         if self.public_url_base:
-            return f"{self.public_url_base}/{filename}"
+            # Try public URL first
+            public_url = f"{self.public_url_base}/{filename}"
+            return public_url
         else:
-            # Fallback to presigned URL if no public URL configured
-            return self.get_presigned_url(filename)
+            # Use presigned URL with 7 day expiry (max for R2)
+            return self.get_presigned_url(filename, expires_in=604800)  # 7 days
     
-    def get_presigned_url(self, filename: str, expires_in: int = 3600) -> str:
+    def get_presigned_url(self, filename: str, expires_in: int = 604800) -> str:
         """
-        Get presigned URL for a file in R2 (for private buckets)
+        Get presigned URL for a file in R2
+        R2 supports up to 7 days (604800 seconds) expiry
         
         Args:
             filename: Object name in R2
-            expires_in: Expiration time in seconds (default 1 hour)
+            expires_in: Expiration time in seconds (default 7 days)
             
         Returns:
             Presigned URL
