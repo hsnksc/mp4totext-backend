@@ -201,6 +201,7 @@ app.add_middleware(
 
 # Include routers
 from app.api.admin import router as admin_router
+from app.api.admin_dashboard import router as admin_dashboard_router
 from app.api.images import router as images_router
 from app.api.videos import router as videos_router
 from app.api.sources import router as sources_router
@@ -208,6 +209,7 @@ app.include_router(auth_router)
 app.include_router(transcription_router)
 app.include_router(credits_router)
 app.include_router(admin_router)
+app.include_router(admin_dashboard_router)
 app.include_router(images_router)
 app.include_router(videos_router, prefix="/api/v1/videos", tags=["videos"])
 app.include_router(sources_router)
