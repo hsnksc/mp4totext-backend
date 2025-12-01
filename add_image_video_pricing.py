@@ -23,22 +23,22 @@ def add_image_video_pricing():
                 "operation_key": "image_generation_sdxl",
                 "operation_name": "Görsel Üretimi (SDXL)",
                 "cost_per_unit": 2.0,
-                "unit_description": "görsel başı",
-                "description": "Stable Diffusion XL ile görsel üretimi"
+                "unit_description": "görsel başına",
+                "description": "Modal A10G GPU ile SDXL görsel üretimi. Örnek: 5 görsel = 10 kredi"
             },
             {
                 "operation_key": "image_generation_flux",
                 "operation_name": "Görsel Üretimi (FLUX)",
                 "cost_per_unit": 5.0,
-                "unit_description": "görsel başı",
-                "description": "FLUX H100 ile ultra kalite görsel üretimi"
+                "unit_description": "görsel başına",
+                "description": "Modal H100 GPU ile ultra kalite FLUX görsel. Örnek: 5 görsel = 25 kredi"
             },
             {
                 "operation_key": "image_generation_imagen",
                 "operation_name": "Görsel Üretimi (Imagen-4)",
                 "cost_per_unit": 8.0,
-                "unit_description": "görsel başı",
-                "description": "Google Imagen-4 ile fotorealistik görsel üretimi"
+                "unit_description": "görsel başına",
+                "description": "Google Imagen-4 fotorealistik görsel. Örnek: 5 görsel = 40 kredi"
             },
         ]
         
@@ -48,22 +48,22 @@ def add_image_video_pricing():
                 "operation_key": "video_generation_base",
                 "operation_name": "Video Üretimi (Base)",
                 "cost_per_unit": 20.0,
-                "unit_description": "video başı",
-                "description": "Transkripten otomatik video oluşturma"
+                "unit_description": "video başına",
+                "description": "Video oluşturma sabit ücreti. Her video için 1 kez alınır."
             },
             {
                 "operation_key": "video_generation_per_segment",
-                "operation_name": "Video Segment",
+                "operation_name": "Video Segment Görseli",
                 "cost_per_unit": 2.0,
-                "unit_description": "segment başı",
-                "description": "Video segment başına ek maliyet"
+                "unit_description": "segment başına",
+                "description": "Her segment için AI görsel üretimi. Örnek: 10 segment = 20 kredi"
             },
             {
                 "operation_key": "video_tts_narration",
                 "operation_name": "Video Seslendirme (TTS)",
                 "cost_per_unit": 0.5,
-                "unit_description": "dakika başı",
-                "description": "OpenAI TTS ile video seslendirme"
+                "unit_description": "dakika başına",
+                "description": "OpenAI TTS seslendirme. Örnek: 10 dk video = 5 kredi"
             },
         ]
         
