@@ -33,6 +33,21 @@ class GeminiMode(enum.Enum):
     CUSTOM = "custom"  # Use custom user-provided prompt
 
 
+class ProcessingMode(enum.Enum):
+    """Processing mode for transcription/document analysis"""
+    AUDIO_ONLY = "audio_only"  # Traditional transcription
+    DOCUMENT_ONLY = "document_only"  # Vision API only (no audio)
+    COMBINED = "combined"  # Both audio + document (NotebookLM style)
+
+
+class VisionStatus(enum.Enum):
+    """Vision processing status"""
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class Transcription(Base):
     """Transcription job model"""
     
@@ -117,6 +132,47 @@ class Transcription(Base):
     
     # Feature Configuration
     assemblyai_features_enabled = Column(JSON, nullable=True)  # Track which AssemblyAI features were used
+    
+    # ============================================================================
+    # VISION API SUPPORT (NotebookLM-style document analysis)
+    # ============================================================================
+    
+    # Processing mode flags
+    has_audio = Column(Boolean, default=True)  # Has audio/video file
+    has_document = Column(Boolean, default=False)  # Has document file
+    processing_mode = Column(SQLEnum(ProcessingMode), default=ProcessingMode.AUDIO_ONLY)
+    
+    # Document file info
+    document_file_id = Column(String, nullable=True)  # MinIO file ID
+    document_file_path = Column(String, nullable=True)  # MinIO path
+    document_filename = Column(String, nullable=True)  # Original filename
+    document_content_type = Column(String, nullable=True)  # MIME type
+    document_file_size = Column(Integer, nullable=True)  # Size in bytes
+    
+    # Document processing results
+    document_text = Column(Text, nullable=True)  # Extracted/OCR text
+    document_analysis = Column(JSON, nullable=True)  # Detailed analysis (JSON)
+    document_summary = Column(Text, nullable=True)  # Summary of document
+    document_key_points = Column(JSON, nullable=True)  # Array of key points
+    document_metadata = Column(JSON, nullable=True)  # Page count, language, etc.
+    
+    # Combined results (audio + document)
+    combined_analysis = Column(JSON, nullable=True)  # Unified analysis
+    combined_summary = Column(Text, nullable=True)  # Unified summary
+    combined_insights = Column(JSON, nullable=True)  # Cross-referenced insights
+    combined_key_topics = Column(JSON, nullable=True)  # Merged topics
+    enable_combined_analysis = Column(Boolean, default=True)  # Whether to combine transcription + document
+    
+    # Vision API settings
+    vision_provider = Column(String, nullable=True)  # gemini, openai
+    vision_model = Column(String, nullable=True)  # gemini-2.0-flash, gpt-4o
+    vision_processing_time = Column(Float, nullable=True)  # Seconds
+    vision_status = Column(SQLEnum(VisionStatus), nullable=True)  # Status
+    vision_error = Column(Text, nullable=True)  # Error message
+    
+    # Multi-document support
+    document_count = Column(Integer, default=0)
+    documents_json = Column(JSON, nullable=True)  # Array of document info
     
     # YouTube specific fields
     youtube_url = Column(String, nullable=True)  # YouTube video URL

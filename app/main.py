@@ -200,7 +200,7 @@ app.add_middleware(
 
 
 # Include routers
-from app.api.admin import router as admin_router
+from app.api.admin import router as admin_router, load_legal_content
 from app.api.admin_dashboard import router as admin_dashboard_router
 from app.api.images import router as images_router
 from app.api.videos import router as videos_router
@@ -213,6 +213,14 @@ app.include_router(admin_dashboard_router)
 app.include_router(images_router)
 app.include_router(videos_router, prefix="/api/v1/videos", tags=["videos"])
 app.include_router(sources_router)
+
+
+# Public endpoint for legal content (no auth required)
+@app.get("/api/v1/legal-content", tags=["public"])
+async def get_public_legal_content():
+    """Get legal content for public pages (no authentication required)"""
+    content = load_legal_content()
+    return content
 
 # Setup WebSocket
 setup_websocket(app)

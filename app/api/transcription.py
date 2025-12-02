@@ -1736,3 +1736,808 @@ async def get_ai_models(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch AI models: {str(e)}"
         )
+
+
+# ============================================================================
+# VISION API ENDPOINTS - Document Analysis (NotebookLM-style)
+# ============================================================================
+
+@router.post("/combined", response_model=TranscriptionResponse, status_code=status.HTTP_201_CREATED)
+async def create_combined_transcription(
+    # Audio file (optional)
+    audio_file: UploadFile | None = File(None),
+    # Document file (optional)
+    document_file: UploadFile | None = File(None),
+    # Processing mode
+    processing_mode: str = Form("auto"),  # "audio_only", "document_only", "combined", "auto"
+    # Audio settings
+    whisper_model: str = Form("tiny"),
+    transcription_provider: str = Form("openai_whisper"),
+    enable_diarization: bool = Form(False),
+    min_speakers: int | None = Form(None),
+    max_speakers: int | None = Form(None),
+    language: str | None = Form(None),
+    # Vision settings
+    vision_provider: str = Form("gemini"),  # "gemini" or "openai"
+    vision_model: str | None = Form(None),  # Specific model
+    # AI Enhancement
+    use_gemini_enhancement: bool = Form(False),
+    ai_provider: str = Form("gemini"),
+    ai_model: str | None = Form(None),
+    gemini_mode: str = Form("text"),
+    custom_prompt: str | None = Form(None),
+    enable_web_search: bool = Form(False),
+    # AssemblyAI features
+    enable_assemblyai_speech_understanding: bool = Form(False),
+    enable_assemblyai_llm_gateway: bool = Form(False),
+    # Combined analysis settings
+    enable_combined_analysis: bool = Form(True),  # Create unified analysis
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    storage = Depends(get_storage_service)
+) -> TranscriptionResponse:
+    """
+    Create a combined transcription job with audio AND/OR document
+    
+    NotebookLM-style unified processing:
+    - **audio_file**: Audio or video file (MP3, MP4, WAV, etc.) - OPTIONAL
+    - **document_file**: Document file (PDF, PNG, JPG, etc.) - OPTIONAL
+    - **processing_mode**: 
+        - "audio_only": Only process audio (traditional transcription)
+        - "document_only": Only process document (Vision API)
+        - "combined": Process both and create unified analysis
+        - "auto": Automatically detect based on uploaded files
+    
+    At least one file (audio or document) must be provided.
+    """
+    from app.models.transcription import ProcessingMode, VisionStatus
+    
+    # Validate: at least one file must be provided
+    if not audio_file and not document_file:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one file (audio or document) must be provided"
+        )
+    
+    # Auto-detect processing mode
+    if processing_mode == "auto":
+        if audio_file and document_file:
+            processing_mode = "combined"
+        elif audio_file:
+            processing_mode = "audio_only"
+        else:
+            processing_mode = "document_only"
+    
+    # Validate processing mode vs files
+    if processing_mode == "audio_only" and not audio_file:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Audio file required for audio_only mode"
+        )
+    if processing_mode == "document_only" and not document_file:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Document file required for document_only mode"
+        )
+    if processing_mode == "combined" and (not audio_file or not document_file):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Both audio and document files required for combined mode"
+        )
+    
+    # File type validation
+    audio_types = [
+        "audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4", "audio/m4a",
+        "audio/flac", "audio/ogg", "audio/x-m4a",
+        "video/mp4", "video/x-msvideo", "video/quicktime", "video/x-matroska",
+        "video/webm", "application/octet-stream"
+    ]
+    document_types = [
+        "application/pdf", "image/png", "image/jpeg", "image/jpg", 
+        "image/webp", "image/gif"
+    ]
+    
+    file_id = None
+    file_path = None
+    filename = None
+    file_size = 0
+    content_type = None
+    
+    document_file_id = None
+    document_file_path = None
+    document_filename = None
+    document_file_size = 0
+    document_content_type = None
+    
+    # Process audio file
+    if audio_file and processing_mode in ["audio_only", "combined"]:
+        if audio_file.content_type not in audio_types:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported audio file type: {audio_file.content_type}"
+            )
+        
+        # Check file size
+        audio_content = await audio_file.read()
+        file_size = len(audio_content)
+        if file_size > 500 * 1024 * 1024:  # 500MB max
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Audio file too large: {file_size / 1024 / 1024:.1f}MB. Max: 500MB"
+            )
+        
+        await audio_file.seek(0)
+        file_id, file_path = storage.save_file(audio_file.file, audio_file.filename)
+        filename = audio_file.filename
+        content_type = audio_file.content_type
+        
+        logger.info(f"📁 Audio file saved: {filename} ({file_size / 1024 / 1024:.1f}MB)")
+    
+    # Process document file
+    if document_file and processing_mode in ["document_only", "combined"]:
+        if document_file.content_type not in document_types:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported document type: {document_file.content_type}. "
+                       f"Supported: PDF, PNG, JPG, WEBP, GIF"
+            )
+        
+        # Check file size
+        doc_content = await document_file.read()
+        document_file_size = len(doc_content)
+        max_doc_size = 50 * 1024 * 1024  # 50MB for PDFs
+        if document_file_size > max_doc_size:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Document too large: {document_file_size / 1024 / 1024:.1f}MB. Max: 50MB"
+            )
+        
+        await document_file.seek(0)
+        document_file_id, document_file_path = storage.save_file(
+            document_file.file, 
+            f"doc_{document_file.filename}"
+        )
+        document_filename = document_file.filename
+        document_content_type = document_file.content_type
+        
+        logger.info(f"📄 Document file saved: {document_filename} ({document_file_size / 1024 / 1024:.1f}MB)")
+    
+    # ============================================================================
+    # CREDIT CHECK
+    # ============================================================================
+    credit_service = get_credit_service(db)
+    required_credits = 0.0
+    
+    # Audio transcription cost
+    if processing_mode in ["audio_only", "combined"]:
+        is_video = content_type and content_type.startswith('video/')
+        estimated_minutes = file_size / (10 * 1024 * 1024) if is_video else file_size / (960 * 1024)
+        estimated_duration = max(1, int(estimated_minutes * 60))
+        
+        required_credits += credit_service.pricing.calculate_transcription_cost(
+            duration_seconds=estimated_duration,
+            enable_diarization=enable_diarization,
+            is_youtube=False,
+            transcription_provider=transcription_provider
+        )
+        
+        # AssemblyAI features
+        if enable_assemblyai_speech_understanding and transcription_provider == "assemblyai":
+            required_credits += (estimated_duration / 60) * credit_service.pricing.ASSEMBLYAI_SPEECH_UNDERSTANDING_PER_MINUTE
+        if enable_assemblyai_llm_gateway and transcription_provider == "assemblyai":
+            required_credits += credit_service.pricing.ASSEMBLYAI_LLM_GATEWAY
+    
+    # Document/Vision cost
+    if processing_mode in ["document_only", "combined"]:
+        # Estimate page count from file size (rough: ~100KB per page for PDF)
+        estimated_pages = max(1, document_file_size // (100 * 1024))
+        if document_content_type == "application/pdf":
+            required_credits += estimated_pages * 0.5  # 0.5 credits per page
+        else:
+            required_credits += 0.3  # Single image: 0.3 credits
+    
+    # Combined analysis cost
+    if processing_mode == "combined" and enable_combined_analysis:
+        required_credits += 2.0  # Fixed cost for combined analysis
+    
+    # Check balance
+    user_balance = credit_service.get_balance(current_user.id)
+    if user_balance < required_credits:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={
+                "error": "Insufficient credits",
+                "required": required_credits,
+                "available": user_balance,
+                "message": f"You need {required_credits:.2f} credits but only have {user_balance:.2f}."
+            }
+        )
+    
+    logger.info(f"💰 Credit check passed: required={required_credits:.2f}, balance={user_balance:.2f}")
+    
+    # ============================================================================
+    # CREATE TRANSCRIPTION RECORD
+    # ============================================================================
+    
+    # Map processing mode to enum
+    mode_map = {
+        "audio_only": ProcessingMode.AUDIO_ONLY,
+        "document_only": ProcessingMode.DOCUMENT_ONLY,
+        "combined": ProcessingMode.COMBINED
+    }
+    
+    # Validate gemini_mode
+    from app.models.transcription import GeminiMode
+    try:
+        gemini_mode_enum = GeminiMode[gemini_mode.upper()]
+    except KeyError:
+        gemini_mode_enum = GeminiMode.TEXT
+    
+    # AssemblyAI features config
+    assemblyai_features = {}
+    if enable_assemblyai_speech_understanding:
+        assemblyai_features['speech_understanding'] = {
+            'sentiment_analysis': True,
+            'auto_chapters': True,
+            'entity_detection': True,
+            'auto_highlights': True,
+            'speaker_labels': True
+        }
+    if enable_assemblyai_llm_gateway:
+        assemblyai_features['llm_gateway'] = {'enabled': True, 'generate_summary': True}
+    
+    transcription = Transcription(
+        user_id=current_user.id,
+        # Audio file info
+        file_id=file_id or f"doc_only_{document_file_id}",
+        filename=filename or document_filename,
+        original_filename=audio_file.filename if audio_file else document_filename,
+        file_size=file_size or document_file_size,
+        file_path=str(file_path) if file_path else str(document_file_path),
+        content_type=content_type or document_content_type,
+        # Processing mode
+        has_audio=audio_file is not None,
+        has_document=document_file is not None,
+        processing_mode=mode_map.get(processing_mode, ProcessingMode.AUDIO_ONLY),
+        # Document info
+        document_file_id=document_file_id,
+        document_file_path=str(document_file_path) if document_file_path else None,
+        document_filename=document_filename,
+        document_content_type=document_content_type,
+        document_file_size=document_file_size if document_file_size > 0 else None,
+        document_count=1 if document_file else 0,
+        # Vision settings
+        vision_provider=vision_provider if document_file else None,
+        vision_model=vision_model,
+        vision_status=VisionStatus.PENDING if document_file else None,
+        # Audio transcription settings
+        language=language,
+        whisper_model=whisper_model,
+        transcription_provider=transcription_provider,
+        enable_diarization=enable_diarization,
+        min_speakers=min_speakers,
+        max_speakers=max_speakers,
+        # AI Enhancement
+        use_gemini_enhancement=use_gemini_enhancement,
+        ai_provider=ai_provider,
+        ai_model=ai_model,
+        enable_web_search=enable_web_search,
+        assemblyai_features_enabled=assemblyai_features if assemblyai_features else None,
+        gemini_mode=gemini_mode_enum,
+        custom_prompt=custom_prompt,
+        status=TranscriptionStatus.PENDING
+    )
+    
+    db.add(transcription)
+    db.commit()
+    db.refresh(transcription)
+    
+    logger.info(f"✅ Created combined transcription job: ID={transcription.id}, mode={processing_mode}")
+    
+    # Trigger Celery task
+    if CELERY_AVAILABLE:
+        try:
+            from app.workers.transcription_worker import process_transcription_task
+            task = process_transcription_task.delay(transcription.id)
+            logger.info(f"🚀 Celery task started: {task.id} for transcription {transcription.id}")
+        except Exception as celery_error:
+            logger.error(f"Celery dispatch failed: {celery_error}")
+            if not settings.is_development:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Background processing service unavailable"
+                )
+    
+    return transcription
+
+
+@router.post("/{transcription_id}/add-document", response_model=TranscriptionResponse)
+async def add_document_to_transcription(
+    transcription_id: int,
+    document_file: UploadFile = File(...),
+    vision_provider: str = Form("gemini"),
+    vision_model: str | None = Form(None),
+    enable_combined_analysis: bool = Form(True),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    storage = Depends(get_storage_service)
+) -> TranscriptionResponse:
+    """
+    Add a document to an existing transcription for combined analysis
+    
+    Use this to:
+    - Add lecture slides to a lecture recording
+    - Add reference materials to a meeting recording
+    - Enrich any transcription with supporting documents
+    """
+    from app.models.transcription import ProcessingMode, VisionStatus
+    
+    # Get transcription
+    transcription = db.query(Transcription).filter(
+        Transcription.id == transcription_id,
+        Transcription.user_id == current_user.id
+    ).first()
+    
+    if not transcription:
+        raise HTTPException(status_code=404, detail="Transcription not found")
+    
+    # Validate document type
+    document_types = [
+        "application/pdf", "image/png", "image/jpeg", "image/jpg", 
+        "image/webp", "image/gif"
+    ]
+    
+    if document_file.content_type not in document_types:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported document type: {document_file.content_type}"
+        )
+    
+    # Read and validate size
+    doc_content = await document_file.read()
+    document_file_size = len(doc_content)
+    if document_file_size > 50 * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Document too large. Max: 50MB"
+        )
+    
+    # Save document
+    await document_file.seek(0)
+    document_file_id, document_file_path = storage.save_file(
+        document_file.file,
+        f"doc_{transcription_id}_{document_file.filename}"
+    )
+    
+    # Credit check
+    credit_service = get_credit_service(db)
+    estimated_pages = max(1, document_file_size // (100 * 1024))
+    required_credits = estimated_pages * 0.5 if document_file.content_type == "application/pdf" else 0.3
+    if enable_combined_analysis:
+        required_credits += 2.0
+    
+    user_balance = credit_service.get_balance(current_user.id)
+    if user_balance < required_credits:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={"error": "Insufficient credits", "required": required_credits, "available": user_balance}
+        )
+    
+    # Update transcription
+    transcription.has_document = True
+    transcription.processing_mode = ProcessingMode.COMBINED
+    transcription.document_file_id = document_file_id
+    transcription.document_file_path = str(document_file_path)
+    transcription.document_filename = document_file.filename
+    transcription.document_content_type = document_file.content_type
+    transcription.document_file_size = document_file_size
+    transcription.document_count = 1
+    transcription.vision_provider = vision_provider
+    transcription.vision_model = vision_model
+    transcription.vision_status = VisionStatus.PENDING
+    
+    db.commit()
+    db.refresh(transcription)
+    
+    logger.info(f"📄 Document added to transcription {transcription_id}: {document_file.filename}")
+    
+    # Trigger vision processing
+    if CELERY_AVAILABLE:
+        try:
+            from app.workers.transcription_worker import process_vision_task
+            task = process_vision_task.delay(transcription.id)
+            logger.info(f"🖼️ Vision task started: {task.id}")
+        except Exception as e:
+            logger.warning(f"Vision task dispatch failed: {e}")
+    
+    return transcription
+
+
+@router.get("/{transcription_id}/document-analysis")
+async def get_document_analysis(
+    transcription_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get document analysis results for a transcription"""
+    
+    transcription = db.query(Transcription).filter(
+        Transcription.id == transcription_id,
+        Transcription.user_id == current_user.id
+    ).first()
+    
+    if not transcription:
+        raise HTTPException(status_code=404, detail="Transcription not found")
+    
+    if not transcription.has_document:
+        raise HTTPException(status_code=404, detail="No document attached to this transcription")
+    
+    return {
+        "transcription_id": transcription_id,
+        "document_filename": transcription.document_filename,
+        "document_content_type": transcription.document_content_type,
+        "vision_status": transcription.vision_status.value if transcription.vision_status else None,
+        "vision_provider": transcription.vision_provider,
+        "vision_model": transcription.vision_model,
+        "document_text": transcription.document_text,
+        "document_summary": transcription.document_summary,
+        "document_key_points": transcription.document_key_points,
+        "document_analysis": transcription.document_analysis,
+        "document_metadata": transcription.document_metadata,
+        "combined_summary": transcription.combined_summary,
+        "combined_insights": transcription.combined_insights,
+        "combined_analysis": transcription.combined_analysis,
+        "vision_processing_time": transcription.vision_processing_time,
+        "vision_error": transcription.vision_error
+    }
+
+
+# ============================================================================
+# VISION API ENDPOINTS - Document-Only and Combined Upload
+# ============================================================================
+
+@router.post("/document-only", response_model=TranscriptionResponse, status_code=status.HTTP_201_CREATED)
+async def create_document_only_transcription(
+    document_file: UploadFile = File(...),
+    vision_provider: str = Form("gemini"),
+    vision_model: str | None = Form(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    storage = Depends(get_storage_service)
+) -> TranscriptionResponse:
+    """
+    Create document-only analysis job (no audio)
+    
+    Uses Vision API to analyze documents (PDF, images)
+    
+    - **document_file**: PDF or image file
+    - **vision_provider**: Vision API provider (gemini, openai)
+    - **vision_model**: Vision model to use (optional)
+    """
+    # Validate document type
+    allowed_types = [
+        "application/pdf",
+        "image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"
+    ]
+    
+    if document_file.content_type not in allowed_types:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported document type: {document_file.content_type}. "
+                   f"Supported: PDF, PNG, JPG, WEBP, GIF"
+        )
+    
+    # Check file size (max 50MB for documents)
+    max_size = 50 * 1024 * 1024
+    file_content = await document_file.read()
+    file_size = len(file_content)
+    
+    if file_size > max_size:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Document too large: {file_size / 1024 / 1024:.1f}MB. Max: 50MB"
+        )
+    
+    # Estimate pages for credit calculation
+    estimated_pages = 1
+    if document_file.content_type == "application/pdf":
+        estimated_pages = max(1, file_size // (100 * 1024))
+    
+    # Credit check
+    credit_service = get_credit_service(db)
+    required_credits = estimated_pages * 0.5 if document_file.content_type == "application/pdf" else 0.3
+    user_balance = credit_service.get_balance(current_user.id)
+    
+    if user_balance < required_credits:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={
+                "error": "Insufficient credits",
+                "required": required_credits,
+                "available": user_balance,
+                "message": f"Document analysis requires {required_credits} credits. You have {user_balance} credits."
+            }
+        )
+    
+    # Save document
+    await document_file.seek(0)
+    document_file_id, document_file_path = storage.save_file(
+        document_file.file,
+        document_file.filename
+    )
+    
+    # Import enums
+    from app.models.transcription import ProcessingMode, VisionStatus
+    
+    # Create transcription record with document-only mode
+    transcription = Transcription(
+        user_id=current_user.id,
+        file_id=document_file_id,  # Use document as main file
+        file_path=str(document_file_path),
+        filename=document_file.filename,
+        original_filename=document_file.filename,
+        file_size=file_size,
+        content_type=document_file.content_type,
+        # Document-specific fields
+        processing_mode=ProcessingMode.DOCUMENT_ONLY,
+        has_document=True,
+        document_file_id=document_file_id,
+        document_file_path=str(document_file_path),
+        document_filename=document_file.filename,
+        document_content_type=document_file.content_type,
+        document_file_size=file_size,
+        document_count=1,
+        # Vision settings
+        vision_provider=vision_provider,
+        vision_model=vision_model,
+        vision_status=VisionStatus.PENDING,
+        # Status
+        status=TranscriptionStatus.QUEUED,
+    )
+    
+    db.add(transcription)
+    db.commit()
+    db.refresh(transcription)
+    
+    logger.info(f"📄 Document-only transcription created: ID={transcription.id}, file={document_file.filename}")
+    
+    # Queue vision processing task
+    if CELERY_AVAILABLE:
+        try:
+            from app.workers.transcription_worker import process_vision_task
+            task = process_vision_task.delay(transcription.id)
+            logger.info(f"🖼️ Vision task queued: {task.id}")
+        except Exception as e:
+            logger.warning(f"⚠️ Vision task dispatch failed: {e}")
+    
+    return transcription
+
+
+@router.post("/combined", response_model=TranscriptionResponse, status_code=status.HTTP_201_CREATED)
+async def create_combined_transcription(
+    audio_file: UploadFile = File(...),
+    document_file: UploadFile | None = File(None),
+    whisper_model: str = Form("tiny"),
+    transcription_provider: str = Form("openai_whisper"),
+    enable_diarization: bool = Form(False),
+    min_speakers: int | None = Form(None),
+    max_speakers: int | None = Form(None),
+    use_gemini_enhancement: bool = Form(False),
+    ai_provider: str = Form("gemini"),
+    ai_model: str | None = Form(None),
+    gemini_mode: str = Form("text"),
+    custom_prompt: str | None = Form(None),
+    enable_web_search: bool = Form(False),
+    enable_assemblyai_speech_understanding: bool = Form(False),
+    enable_assemblyai_llm_gateway: bool = Form(False),
+    language: str | None = Form(None),
+    vision_provider: str = Form("gemini"),
+    vision_model: str | None = Form(None),
+    enable_combined_analysis: bool = Form(True),
+    processing_mode: str = Form("auto"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    storage = Depends(get_storage_service)
+) -> TranscriptionResponse:
+    """
+    Create combined audio + document transcription (NotebookLM-style)
+    
+    - **audio_file**: Audio/video file for transcription
+    - **document_file**: Optional PDF or image for Vision analysis
+    - **enable_combined_analysis**: Merge transcription + document insights
+    - **processing_mode**: auto, audio_only, document_only, combined
+    """
+    # Validate audio file type
+    allowed_audio_types = [
+        "audio/mpeg", "audio/wav", "audio/x-wav", "audio/mp4", "audio/m4a",
+        "audio/flac", "audio/ogg", "audio/x-m4a",
+        "video/mp4", "video/x-msvideo", "video/quicktime", "video/x-matroska",
+        "video/webm", "application/octet-stream"
+    ]
+    
+    if audio_file.content_type not in allowed_audio_types:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported audio file type: {audio_file.content_type}"
+        )
+    
+    # Validate document file type if provided
+    allowed_doc_types = ["application/pdf", "image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"]
+    if document_file and document_file.content_type not in allowed_doc_types:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported document type: {document_file.content_type}. "
+                   f"Supported: PDF, PNG, JPG, WEBP, GIF"
+        )
+    
+    # Check audio file size (max 500MB)
+    audio_content = await audio_file.read()
+    audio_file_size = len(audio_content)
+    if audio_file_size > 500 * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Audio file too large: {audio_file_size / 1024 / 1024:.1f}MB. Max: 500MB"
+        )
+    
+    # Check document file size if provided (max 50MB)
+    doc_file_size = 0
+    if document_file:
+        doc_content = await document_file.read()
+        doc_file_size = len(doc_content)
+        if doc_file_size > 50 * 1024 * 1024:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Document too large: {doc_file_size / 1024 / 1024:.1f}MB. Max: 50MB"
+            )
+    
+    # Credit estimation
+    credit_service = get_credit_service(db)
+    estimated_minutes = audio_file_size / (1024 * 1024) * 2  # Rough estimate
+    
+    required_credits = estimated_minutes * (1.2 if transcription_provider == "assemblyai" else 1.0)
+    
+    if document_file:
+        estimated_pages = max(1, doc_file_size // (100 * 1024)) if document_file.content_type == "application/pdf" else 1
+        required_credits += estimated_pages * 0.5
+        if enable_combined_analysis:
+            required_credits += 2.0
+    
+    if use_gemini_enhancement:
+        required_credits += 20.0  # Base enhancement cost
+    
+    user_balance = credit_service.get_balance(current_user.id)
+    if user_balance < required_credits:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={
+                "error": "Insufficient credits",
+                "required": round(required_credits, 2),
+                "available": user_balance,
+                "message": f"Combined analysis requires ~{round(required_credits, 2)} credits. You have {user_balance} credits."
+            }
+        )
+    
+    # Save audio file
+    await audio_file.seek(0)
+    audio_file_id, audio_file_path = storage.save_file(audio_file.file, audio_file.filename)
+    
+    # Save document file if provided
+    doc_file_id = None
+    doc_file_path = None
+    if document_file:
+        await document_file.seek(0)
+        doc_file_id, doc_file_path = storage.save_file(
+            document_file.file,
+            f"doc_{document_file.filename}"
+        )
+    
+    # Import enums
+    from app.models.transcription import ProcessingMode, VisionStatus, GeminiMode
+    
+    # Determine processing mode
+    if processing_mode == "auto":
+        if document_file:
+            proc_mode = ProcessingMode.COMBINED
+        else:
+            proc_mode = ProcessingMode.AUDIO_ONLY
+    else:
+        proc_mode = ProcessingMode[processing_mode.upper()]
+    
+    # Validate gemini_mode
+    try:
+        gemini_mode_enum = GeminiMode[gemini_mode.upper()]
+    except KeyError:
+        gemini_mode_enum = GeminiMode.TEXT
+    
+    # Create transcription record
+    transcription = Transcription(
+        user_id=current_user.id,
+        file_id=audio_file_id,
+        file_path=str(audio_file_path),
+        filename=audio_file.filename,
+        original_filename=audio_file.filename,
+        file_size=audio_file_size,
+        content_type=audio_file.content_type,
+        # Processing settings
+        processing_mode=proc_mode,
+        whisper_model=whisper_model,
+        transcription_provider=transcription_provider,
+        enable_diarization=enable_diarization,
+        min_speakers=min_speakers,
+        max_speakers=max_speakers,
+        detected_language=language,
+        # AI Enhancement
+        use_gemini_enhancement=use_gemini_enhancement,
+        ai_provider=ai_provider,
+        ai_model=ai_model,
+        gemini_mode=gemini_mode_enum,
+        custom_prompt=custom_prompt,
+        enable_web_search=enable_web_search,
+        enable_assemblyai_speech_understanding=enable_assemblyai_speech_understanding,
+        enable_assemblyai_llm_gateway=enable_assemblyai_llm_gateway,
+        # Document fields
+        has_document=document_file is not None,
+        document_file_id=doc_file_id,
+        document_file_path=str(doc_file_path) if doc_file_path else None,
+        document_filename=document_file.filename if document_file else None,
+        document_content_type=document_file.content_type if document_file else None,
+        document_file_size=doc_file_size if document_file else None,
+        document_count=1 if document_file else 0,
+        # Vision settings
+        vision_provider=vision_provider if document_file else None,
+        vision_model=vision_model if document_file else None,
+        vision_status=VisionStatus.PENDING if document_file else None,
+        enable_combined_analysis=enable_combined_analysis if document_file else False,
+        # Status
+        status=TranscriptionStatus.QUEUED,
+    )
+    
+    db.add(transcription)
+    db.commit()
+    db.refresh(transcription)
+    
+    logger.info(f"🔗 Combined transcription created: ID={transcription.id}, audio={audio_file.filename}, doc={document_file.filename if document_file else 'None'}")
+    
+    # Queue transcription task (vision will be triggered after transcription)
+    if CELERY_AVAILABLE:
+        try:
+            from app.workers.transcription_worker import process_transcription_task
+            task = process_transcription_task.delay(transcription.id)
+            logger.info(f"🚀 Transcription task queued: {task.id}")
+        except Exception as e:
+            logger.warning(f"⚠️ Transcription task dispatch failed: {e}")
+    
+    return transcription
+
+
+@router.get("/{transcription_id}/vision-status")
+async def get_vision_status(
+    transcription_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """Get Vision API processing status for a transcription"""
+    
+    transcription = db.query(Transcription).filter(
+        Transcription.id == transcription_id,
+        Transcription.user_id == current_user.id
+    ).first()
+    
+    if not transcription:
+        raise HTTPException(status_code=404, detail="Transcription not found")
+    
+    return {
+        "transcription_id": transcription_id,
+        "has_document": transcription.has_document,
+        "vision_status": transcription.vision_status.value if transcription.vision_status else None,
+        "vision_provider": transcription.vision_provider,
+        "vision_model": transcription.vision_model,
+        "vision_processing_time": transcription.vision_processing_time,
+        "vision_error": transcription.vision_error,
+        "enable_combined_analysis": transcription.enable_combined_analysis,
+        "document_filename": transcription.document_filename,
+        "document_summary": transcription.document_summary[:500] if transcription.document_summary else None,
+        "combined_summary": transcription.combined_summary[:500] if transcription.combined_summary else None,
+    }
+
+

@@ -1177,12 +1177,26 @@ def process_transcription_task(self, transcription_id: int) -> Dict[str, Any]:
             }
         )
         
+        # ============================================================================
+        # VISION PROCESSING - If document is attached, trigger Vision task
+        # ============================================================================
+        if transcription.has_document and transcription.document_file_id:
+            logger.info(f"📄 Document attached, triggering Vision processing...")
+            try:
+                # Queue Vision task
+                vision_task = process_vision_task.delay(transcription_id)
+                logger.info(f"🖼️ Vision task queued: {vision_task.id}")
+            except Exception as vision_error:
+                logger.warning(f"⚠️ Vision task dispatch failed: {vision_error}")
+                # Don't fail the main task - transcription is already complete
+        
         return {
             'status': 'success',
             'transcription_id': transcription_id,
             'processing_time': processing_time,
             'text_length': len(result["text"]),
-            'speaker_count': result.get("speaker_count", 0)
+            'speaker_count': result.get("speaker_count", 0),
+            'has_document': transcription.has_document
         }
         
     except FileNotFoundError as e:
@@ -1940,3 +1954,241 @@ def generate_video_task(
         
     finally:
         db.close()
+
+
+# ============================================================================
+# VISION API TASK - Document Analysis (NotebookLM-style)
+# ============================================================================
+
+@celery_app.task(
+    bind=True,
+    base=TranscriptionTask,
+    name="app.workers.process_vision",
+    time_limit=600,  # 10 minutes hard timeout
+    soft_time_limit=540,  # 9 minutes soft timeout
+)
+def process_vision_task(self, transcription_id: int) -> Dict[str, Any]:
+    """
+    Process document with Vision API (Gemini)
+    
+    This task handles:
+    - PDF document analysis (multi-page)
+    - Image analysis (OCR, content extraction)
+    - Combined analysis with audio transcription
+    
+    Args:
+        transcription_id: ID of transcription with document
+        
+    Returns:
+        Result dictionary with status and data
+    """
+    from app.models.transcription import ProcessingMode, VisionStatus
+    from app.services.vision_service import get_vision_service
+    import asyncio
+    
+    db: Session = SessionLocal()
+    start_time = time.time()
+    
+    try:
+        logger.info(f"🖼️ Starting Vision task: transcription_id={transcription_id}")
+        
+        # Get transcription
+        transcription = db.query(Transcription).filter(
+            Transcription.id == transcription_id
+        ).first()
+        
+        if not transcription:
+            raise ValueError(f"Transcription not found: {transcription_id}")
+        
+        if not transcription.has_document:
+            logger.warning(f"⚠️ No document attached to transcription {transcription_id}")
+            return {"status": "skipped", "reason": "No document attached"}
+        
+        # Update status
+        transcription.vision_status = VisionStatus.PROCESSING
+        db.commit()
+        
+        self.update_state(
+            state='PROGRESS',
+            meta={'current': 10, 'total': 100, 'status': 'Loading document...'}
+        )
+        
+        # Get document file
+        storage = FileStorageService()
+        doc_path = storage.get_file_path(transcription.document_file_id)
+        
+        if not doc_path or not doc_path.exists():
+            raise FileNotFoundError(f"Document file not found: {transcription.document_file_id}")
+        
+        logger.info(f"📄 Processing document: {transcription.document_filename} ({doc_path})")
+        
+        # Read document content
+        with open(doc_path, 'rb') as f:
+            doc_data = f.read()
+        
+        self.update_state(
+            state='PROGRESS',
+            meta={'current': 20, 'total': 100, 'status': 'Analyzing document with Vision API...'}
+        )
+        
+        # Initialize Vision service
+        vision_service = get_vision_service(
+            provider=transcription.vision_provider or "gemini",
+            model=transcription.vision_model
+        )
+        
+        # Analyze document
+        doc_result = asyncio.run(vision_service.analyze_document(
+            file_data=doc_data,
+            content_type=transcription.document_content_type,
+            filename=transcription.document_filename
+        ))
+        
+        if "error" in doc_result:
+            raise Exception(f"Vision API error: {doc_result['error']}")
+        
+        logger.info(f"✅ Document analyzed: {doc_result.get('page_count', 1)} pages")
+        
+        self.update_state(
+            state='PROGRESS',
+            meta={'current': 60, 'total': 100, 'status': 'Processing results...'}
+        )
+        
+        # Save document analysis results
+        transcription.document_text = doc_result.get("extracted_text", "")
+        transcription.document_summary = doc_result.get("summary", "")
+        transcription.document_key_points = doc_result.get("key_points", [])
+        transcription.document_analysis = doc_result
+        transcription.document_metadata = {
+            "page_count": doc_result.get("page_count", 1),
+            "total_pages": doc_result.get("total_pages", 1),
+            "language": doc_result.get("language", "unknown"),
+            "document_type": doc_result.get("document_type", "unknown")
+        }
+        transcription.vision_processing_time = doc_result.get("processing_time", time.time() - start_time)
+        transcription.vision_model = doc_result.get("model", transcription.vision_model)
+        
+        db.commit()
+        
+        # Check if combined analysis is needed
+        if transcription.processing_mode == ProcessingMode.COMBINED and transcription.text:
+            self.update_state(
+                state='PROGRESS',
+                meta={'current': 70, 'total': 100, 'status': 'Creating combined analysis...'}
+            )
+            
+            logger.info("🔗 Creating combined analysis (audio + document)...")
+            
+            # Get audio transcription text
+            audio_text = transcription.text or transcription.cleaned_text or ""
+            
+            # Create combined analysis
+            combined_result = asyncio.run(vision_service.create_combined_analysis(
+                audio_text=audio_text,
+                document_text=transcription.document_text,
+                document_analysis=doc_result
+            ))
+            
+            if "error" not in combined_result:
+                transcription.combined_summary = combined_result.get("combined_summary", "")
+                transcription.combined_insights = combined_result.get("key_insights", [])
+                transcription.combined_analysis = combined_result
+                transcription.combined_key_topics = combined_result.get("study_guide", {}).get("main_topics", [])
+                
+                logger.info("✅ Combined analysis created successfully")
+            else:
+                logger.warning(f"⚠️ Combined analysis failed: {combined_result.get('error')}")
+        
+        # Calculate and deduct credits
+        self.update_state(
+            state='PROGRESS',
+            meta={'current': 90, 'total': 100, 'status': 'Finalizing...'}
+        )
+        
+        credit_service = get_credit_service(db)
+        page_count = doc_result.get("page_count", 1)
+        
+        # Calculate credit cost
+        if transcription.document_content_type == "application/pdf":
+            vision_credits = page_count * 0.5  # 0.5 credits per page
+        else:
+            vision_credits = 0.3  # Single image
+        
+        # Add combined analysis cost if applicable
+        if transcription.processing_mode == ProcessingMode.COMBINED and transcription.combined_analysis:
+            vision_credits += 2.0  # Combined analysis cost
+        
+        # Deduct credits
+        try:
+            credit_service.deduct_credits(
+                user_id=transcription.user_id,
+                amount=vision_credits,
+                operation_type=OperationType.AI_ENHANCEMENT,  # Use AI enhancement type for now
+                description=f"Vision: {transcription.document_filename} ({page_count} pages)",
+                transcription_id=transcription_id,
+                metadata={
+                    "vision_provider": transcription.vision_provider,
+                    "page_count": page_count,
+                    "processing_mode": transcription.processing_mode.value if transcription.processing_mode else "unknown"
+                }
+            )
+            logger.info(f"💰 Deducted {vision_credits} credits for Vision processing")
+        except Exception as credit_error:
+            logger.error(f"❌ Credit deduction failed: {credit_error}")
+        
+        # Update status to completed
+        transcription.vision_status = VisionStatus.COMPLETED
+        
+        # If this was document_only mode, also update main status
+        if transcription.processing_mode == ProcessingMode.DOCUMENT_ONLY:
+            transcription.status = TranscriptionStatus.COMPLETED
+            transcription.completed_at = datetime.utcnow()
+        
+        db.commit()
+        
+        processing_time = time.time() - start_time
+        logger.info(f"✅ Vision task completed: transcription_id={transcription_id}, time={processing_time:.1f}s")
+        
+        return {
+            "status": "success",
+            "transcription_id": transcription_id,
+            "page_count": page_count,
+            "processing_time": processing_time,
+            "has_combined_analysis": transcription.combined_analysis is not None
+        }
+        
+    except SoftTimeLimitExceeded:
+        logger.error(f"⏰ Vision task timed out: {transcription_id}")
+        transcription.vision_status = VisionStatus.FAILED
+        transcription.vision_error = "Processing timed out"
+        db.commit()
+        raise
+        
+    except Exception as e:
+        logger.error(f"❌ Vision task failed: {e}", exc_info=True)
+        
+        try:
+            transcription = db.query(Transcription).filter(
+                Transcription.id == transcription_id
+            ).first()
+            if transcription:
+                transcription.vision_status = VisionStatus.FAILED
+                transcription.vision_error = str(e)
+                db.commit()
+        except:
+            pass
+        
+        # Retry logic
+        if self.request.retries < self.max_retries:
+            logger.info(f"🔄 Retrying vision task... (attempt {self.request.retries + 1})")
+            raise self.retry(exc=e)
+        
+        return {
+            "status": "error",
+            "message": str(e),
+            "transcription_id": transcription_id
+        }
+        
+    finally:
+        db.close()
+

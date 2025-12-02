@@ -3,8 +3,10 @@ Admin API endpoints for system configuration
 Only accessible by admin users
 """
 
+import os
+import json
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -18,6 +20,9 @@ from app.services.runpod_service import get_runpod_service
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 settings = get_settings()
+
+# Legal content file path
+LEGAL_CONTENT_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "legal_content.json")
 
 
 class TranscriptionProviderSettings(BaseModel):
@@ -298,3 +303,85 @@ async def check_runpod_health(
             "status": "error",
             "error": str(e)
         }
+
+
+# ==============================================================================
+# LEGAL CONTENT ENDPOINTS
+# ==============================================================================
+
+class LegalContent(BaseModel):
+    """Legal content for Privacy Policy, Terms of Use, and Legal pages"""
+    privacy_policy_en: Optional[str] = ""
+    privacy_policy_tr: Optional[str] = ""
+    terms_of_use_en: Optional[str] = ""
+    terms_of_use_tr: Optional[str] = ""
+    legal_company_name: Optional[str] = "Gistify Technology"
+    legal_address: Optional[str] = ""
+    legal_city_country: Optional[str] = "Istanbul, Turkey"
+    legal_email: Optional[str] = "support@gistify.pro"
+    legal_tax_id: Optional[str] = ""
+    legal_dispute_location: Optional[str] = "Istanbul, Turkey"
+    effective_date: Optional[str] = ""
+
+
+def load_legal_content() -> dict:
+    """Load legal content from JSON file"""
+    try:
+        if os.path.exists(LEGAL_CONTENT_FILE):
+            with open(LEGAL_CONTENT_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception as e:
+        logger.error(f"Failed to load legal content: {e}")
+    return {}
+
+
+def save_legal_content(content: dict) -> bool:
+    """Save legal content to JSON file"""
+    try:
+        with open(LEGAL_CONTENT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(content, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save legal content: {e}")
+        return False
+
+
+@router.get("/legal-content")
+async def get_legal_content(
+    admin: User = Depends(require_admin)
+):
+    """
+    Get current legal content settings
+    """
+    content = load_legal_content()
+    return content
+
+
+@router.post("/legal-content")
+async def update_legal_content(
+    content: LegalContent,
+    admin: User = Depends(require_admin)
+):
+    """
+    Update legal content settings
+    """
+    content_dict = content.model_dump()
+    
+    if save_legal_content(content_dict):
+        logger.info(f"✅ Legal content updated by admin: {admin.username}")
+        return {"success": True, "message": "Legal content saved successfully"}
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save legal content"
+        )
+
+
+# Public endpoint for frontend to fetch legal content (no auth required)
+@router.get("/public/legal-content")
+async def get_public_legal_content():
+    """
+    Get legal content for public pages (no auth required)
+    """
+    content = load_legal_content()
+    return content
