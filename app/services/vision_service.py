@@ -378,6 +378,7 @@ class VisionService:
                 
                 all_text = []
                 all_key_points = []
+                all_topics = []  # Collect topics from all pages
                 page_analyses = []
                 
                 for page in pages:
@@ -394,6 +395,7 @@ class VisionService:
                     if "error" not in page_result:
                         all_text.append(page_result.get("extracted_text", ""))
                         all_key_points.extend(page_result.get("key_points", []))
+                        all_topics.extend(page_result.get("topics", []))  # Collect topics
                         page_analyses.append({
                             "page": page["page_number"],
                             "summary": page_result.get("summary", ""),
@@ -410,6 +412,7 @@ class VisionService:
                     "page_count": len(pages),
                     "total_pages": pages[0]["total_pages"] if pages else 0,
                     "key_points": list(set(all_key_points))[:20],  # Deduplicate, limit to 20
+                    "topics": list(set(all_topics))[:15],  # Deduplicate topics, limit to 15
                     "page_analyses": page_analyses,
                     "processing_time": time.time() - start_time,
                     "provider": self.provider,

@@ -2058,6 +2058,7 @@ def process_vision_task(self, transcription_id: int) -> Dict[str, Any]:
         transcription.document_text = doc_result.get("extracted_text", "")
         transcription.document_summary = doc_result.get("summary", "")
         transcription.document_key_points = doc_result.get("key_points", [])
+        transcription.document_topics = doc_result.get("topics", [])  # Add topics from Vision API
         transcription.document_analysis = doc_result
         transcription.document_metadata = {
             "page_count": doc_result.get("page_count", 1),
