@@ -2293,7 +2293,7 @@ async def create_document_only_transcription(
             vision_model=vision_model,
             vision_status=VisionStatus.PENDING,
             # Status
-            status=TranscriptionStatus.QUEUED,
+            status=TranscriptionStatus.PENDING,
         )
         
         db.add(transcription)
@@ -2501,7 +2501,7 @@ async def create_combined_transcription(
         vision_status=VisionStatus.PENDING if document_file else None,
         enable_combined_analysis=enable_combined_analysis if document_file else False,
         # Status
-        status=TranscriptionStatus.QUEUED,
+        status=TranscriptionStatus.PENDING,
     )
     
     db.add(transcription)
