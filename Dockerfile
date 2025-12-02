@@ -61,6 +61,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
+# Make startup script executable
+RUN chmod +x startup.sh
+
 # Copy supervisor config
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
@@ -71,5 +74,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Start both FastAPI and Celery via supervisor
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+# Start with startup script (runs migrations then supervisor)
+CMD ["./startup.sh"]
