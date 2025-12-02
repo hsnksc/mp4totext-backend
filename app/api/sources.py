@@ -403,52 +403,22 @@ BEGIN YOUR ARTICLE:
     
     full_prompt = base_prompt
     
-    # 5. Call AI service
+    # 5. Call AI service using GeminiService with provider/model routing
+    # This ensures all providers use the user-selected model
     try:
         result = None
         logger.info(f"🤖 Calling AI: provider={request.ai_provider}, model={request.ai_model}")
         
-        if request.ai_provider == "openai":
-            from app.services.openai_cleaner_service import get_openai_cleaner
-            service = get_openai_cleaner()
-            if not service.is_enabled():
-                raise Exception("OpenAI service not configured")
-            logger.info("📡 Calling OpenAI...")
-            response = service.clean_transcript(full_prompt)
-            result = response.get("cleaned_text", "")
-            
-        elif request.ai_provider == "gemini":
-            from app.services.gemini_service import get_gemini_service
-            service = get_gemini_service()
-            if not service.is_enabled():
-                raise Exception("Gemini service not configured")
-            logger.info("📡 Calling Gemini...")
-            response = await service.enhance_text(full_prompt, language="en")
-            result = response.get("enhanced_text", "")
-            
-        elif request.ai_provider == "together":
-            from app.services.together_service import get_together_service
-            service = get_together_service()
-            if not service.is_enabled():
-                raise Exception("Together AI service not configured")
-            logger.info("📡 Calling Together AI...")
-            response = service.clean_transcript(full_prompt)
-            result = response.get("cleaned_text", "")
-            
-        elif request.ai_provider == "groq":
-            from app.services.groq_service import get_groq_service
-            service = get_groq_service()
-            if not service.is_enabled():
-                raise Exception("Groq service not configured")
-            logger.info("📡 Calling Groq...")
-            response = await service.enhance_text(full_prompt, language="en")
-            result = response.get("enhanced_text", "")
-            
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Unknown AI provider: {request.ai_provider}"
-            )
+        # Use GeminiService which handles all providers with model routing
+        from app.services.gemini_service import GeminiService
+        service = GeminiService(preferred_provider=request.ai_provider, preferred_model=request.ai_model)
+        
+        if not service.is_enabled():
+            raise Exception(f"{request.ai_provider.upper()} service not configured. Check API key.")
+        
+        logger.info(f"📡 Calling {request.ai_provider.upper()} with model {request.ai_model}...")
+        response = await service.enhance_text(full_prompt, language=content_language)
+        result = response.get("enhanced_text", "")
         
         if not result:
             raise Exception("AI returned empty result")
