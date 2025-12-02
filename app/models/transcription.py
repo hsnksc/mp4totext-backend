@@ -140,7 +140,7 @@ class Transcription(Base):
     # Processing mode flags
     has_audio = Column(Boolean, default=True)  # Has audio/video file
     has_document = Column(Boolean, default=False)  # Has document file
-    processing_mode = Column(SQLEnum(ProcessingMode), default=ProcessingMode.AUDIO_ONLY)
+    processing_mode = Column(String, default="audio_only")  # audio_only, document_only, combined
     
     # Document file info
     document_file_id = Column(String, nullable=True)  # MinIO file ID
@@ -167,7 +167,7 @@ class Transcription(Base):
     vision_provider = Column(String, nullable=True)  # gemini, openai
     vision_model = Column(String, nullable=True)  # gemini-2.0-flash, gpt-4o
     vision_processing_time = Column(Float, nullable=True)  # Seconds
-    vision_status = Column(SQLEnum(VisionStatus), nullable=True)  # Status
+    vision_status = Column(String, nullable=True)  # pending, processing, completed, failed
     vision_error = Column(Text, nullable=True)  # Error message
     
     # Multi-document support

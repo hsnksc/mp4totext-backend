@@ -1790,7 +1790,7 @@ async def create_combined_transcription(
     
     At least one file (audio or document) must be provided.
     """
-    from app.models.transcription import ProcessingMode, VisionStatus
+    # ProcessingMode and VisionStatus are now strings, no enum import needed
     
     # Validate: at least one file must be provided
     if not audio_file and not document_file:
@@ -1959,11 +1959,11 @@ async def create_combined_transcription(
     # CREATE TRANSCRIPTION RECORD
     # ============================================================================
     
-    # Map processing mode to enum
+    # Map processing mode to string (no more enum)
     mode_map = {
-        "audio_only": ProcessingMode.AUDIO_ONLY,
-        "document_only": ProcessingMode.DOCUMENT_ONLY,
-        "combined": ProcessingMode.COMBINED
+        "audio_only": "audio_only",
+        "document_only": "document_only",
+        "combined": "combined"
     }
     
     # Validate gemini_mode
@@ -1998,7 +1998,7 @@ async def create_combined_transcription(
         # Processing mode
         has_audio=audio_file is not None,
         has_document=document_file is not None,
-        processing_mode=mode_map.get(processing_mode, ProcessingMode.AUDIO_ONLY),
+        processing_mode=mode_map.get(processing_mode, "audio_only"),
         # Document info
         document_file_id=document_file_id,
         document_file_path=str(document_file_path) if document_file_path else None,
@@ -2009,7 +2009,7 @@ async def create_combined_transcription(
         # Vision settings
         vision_provider=vision_provider if document_file else None,
         vision_model=vision_model,
-        vision_status=VisionStatus.PENDING if document_file else None,
+        vision_status="pending" if document_file else None,
         # Audio transcription settings
         language=language,
         whisper_model=whisper_model,
@@ -2070,7 +2070,7 @@ async def add_document_to_transcription(
     - Add reference materials to a meeting recording
     - Enrich any transcription with supporting documents
     """
-    from app.models.transcription import ProcessingMode, VisionStatus
+    # ProcessingMode and VisionStatus are now strings, no enum import needed
     
     # Get transcription
     transcription = db.query(Transcription).filter(
@@ -2125,7 +2125,7 @@ async def add_document_to_transcription(
     
     # Update transcription
     transcription.has_document = True
-    transcription.processing_mode = ProcessingMode.COMBINED
+    transcription.processing_mode = "combined"
     transcription.document_file_id = document_file_id
     transcription.document_file_path = str(document_file_path)
     transcription.document_filename = document_file.filename
@@ -2134,7 +2134,7 @@ async def add_document_to_transcription(
     transcription.document_count = 1
     transcription.vision_provider = vision_provider
     transcription.vision_model = vision_model
-    transcription.vision_status = VisionStatus.PENDING
+    transcription.vision_status = "pending"
     
     db.commit()
     db.refresh(transcription)
@@ -2266,8 +2266,7 @@ async def create_document_only_transcription(
         document_file.filename
     )
     
-    # Import enums
-    from app.models.transcription import ProcessingMode, VisionStatus
+    # ProcessingMode and VisionStatus are now strings, no enum import needed
     
     try:
         # Create transcription record with document-only mode
@@ -2280,7 +2279,7 @@ async def create_document_only_transcription(
             file_size=file_size,
             content_type=document_file.content_type,
             # Document-specific fields
-            processing_mode=ProcessingMode.DOCUMENT_ONLY,
+            processing_mode="document_only",
             has_document=True,
             document_file_id=document_file_id,
             document_file_path=str(document_file_path),
@@ -2291,7 +2290,7 @@ async def create_document_only_transcription(
             # Vision settings
             vision_provider=vision_provider,
             vision_model=vision_model,
-            vision_status=VisionStatus.PENDING,
+            vision_status="pending",
             # Status
             status=TranscriptionStatus.PENDING,
         )
@@ -2444,16 +2443,16 @@ async def create_combined_transcription(
         )
     
     # Import enums
-    from app.models.transcription import ProcessingMode, VisionStatus, GeminiMode
+    from app.models.transcription import GeminiMode
     
-    # Determine processing mode
+    # Determine processing mode (now uses strings)
     if processing_mode == "auto":
         if document_file:
-            proc_mode = ProcessingMode.COMBINED
+            proc_mode = "combined"
         else:
-            proc_mode = ProcessingMode.AUDIO_ONLY
+            proc_mode = "audio_only"
     else:
-        proc_mode = ProcessingMode[processing_mode.upper()]
+        proc_mode = processing_mode.lower()
     
     # Validate gemini_mode
     try:
@@ -2498,7 +2497,7 @@ async def create_combined_transcription(
         # Vision settings
         vision_provider=vision_provider if document_file else None,
         vision_model=vision_model if document_file else None,
-        vision_status=VisionStatus.PENDING if document_file else None,
+        vision_status="pending" if document_file else None,
         enable_combined_analysis=enable_combined_analysis if document_file else False,
         # Status
         status=TranscriptionStatus.PENDING,

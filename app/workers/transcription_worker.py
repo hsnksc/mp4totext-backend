@@ -1982,7 +1982,7 @@ def process_vision_task(self, transcription_id: int) -> Dict[str, Any]:
     Returns:
         Result dictionary with status and data
     """
-    from app.models.transcription import ProcessingMode, VisionStatus
+    # ProcessingMode and VisionStatus are now simple strings, no enum import needed
     from app.services.vision_service import get_vision_service
     import asyncio
     
@@ -2137,10 +2137,10 @@ def process_vision_task(self, transcription_id: int) -> Dict[str, Any]:
             logger.error(f"❌ Credit deduction failed: {credit_error}")
         
         # Update status to completed
-        transcription.vision_status = VisionStatus.COMPLETED
+        transcription.vision_status = "completed"
         
         # If this was document_only mode, also update main status
-        if transcription.processing_mode == ProcessingMode.DOCUMENT_ONLY:
+        if transcription.processing_mode == "document_only":
             transcription.status = TranscriptionStatus.COMPLETED
             transcription.completed_at = datetime.utcnow()
         
@@ -2159,7 +2159,7 @@ def process_vision_task(self, transcription_id: int) -> Dict[str, Any]:
         
     except SoftTimeLimitExceeded:
         logger.error(f"⏰ Vision task timed out: {transcription_id}")
-        transcription.vision_status = VisionStatus.FAILED
+        transcription.vision_status = "failed"
         transcription.vision_error = "Processing timed out"
         db.commit()
         raise
@@ -2172,7 +2172,7 @@ def process_vision_task(self, transcription_id: int) -> Dict[str, Any]:
                 Transcription.id == transcription_id
             ).first()
             if transcription:
-                transcription.vision_status = VisionStatus.FAILED
+                transcription.vision_status = "failed"
                 transcription.vision_error = str(e)
                 db.commit()
         except:
