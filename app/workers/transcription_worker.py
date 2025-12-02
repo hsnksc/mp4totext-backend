@@ -2004,8 +2004,8 @@ def process_vision_task(self, transcription_id: int) -> Dict[str, Any]:
             logger.warning(f"⚠️ No document attached to transcription {transcription_id}")
             return {"status": "skipped", "reason": "No document attached"}
         
-        # Update status
-        transcription.vision_status = VisionStatus.PROCESSING
+        # Update status (using string instead of enum)
+        transcription.vision_status = "processing"
         db.commit()
         
         self.update_state(
