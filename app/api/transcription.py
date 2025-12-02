@@ -531,6 +531,7 @@ async def generate_lecture_notes(
         text_source = (
             "enhanced" if transcription.enhanced_text else
             "cleaned" if transcription.cleaned_text else
+            "document" if transcription.document_text else
             "original"
         )
         logger.info(f"📝 Converting to lecture notes (using {text_source} text, length: {len(source_text)} chars)")
@@ -551,6 +552,7 @@ async def generate_lecture_notes(
         text_source_used = (
             "enhanced_text" if transcription.enhanced_text else
             "cleaned_text" if transcription.cleaned_text else
+            "document_text" if transcription.document_text else
             "original_text"
         )
         transcription.gemini_metadata = {
@@ -687,6 +689,7 @@ async def apply_custom_prompt(
         text_source = (
             "enhanced" if transcription.enhanced_text else
             "cleaned" if transcription.cleaned_text else
+            "document" if transcription.document_text else
             "original"
         )
         logger.info(f"🎨 Processing custom prompt on {text_source} text (length: {len(source_text)} chars)")
@@ -1183,6 +1186,7 @@ async def generate_exam_questions(
         text_source = (
             "enhanced" if transcription.enhanced_text else
             "cleaned" if transcription.cleaned_text else
+            "document" if transcription.document_text else
             "original"
         )
         logger.info(f"📝 Generating exam questions from {text_source} text (length: {len(source_text)} chars)")
