@@ -2269,35 +2269,47 @@ async def create_document_only_transcription(
     # Import enums
     from app.models.transcription import ProcessingMode, VisionStatus
     
-    # Create transcription record with document-only mode
-    transcription = Transcription(
-        user_id=current_user.id,
-        file_id=document_file_id,  # Use document as main file
-        file_path=str(document_file_path),
-        filename=document_file.filename,
-        original_filename=document_file.filename,
-        file_size=file_size,
-        content_type=document_file.content_type,
-        # Document-specific fields
-        processing_mode=ProcessingMode.DOCUMENT_ONLY,
-        has_document=True,
-        document_file_id=document_file_id,
-        document_file_path=str(document_file_path),
-        document_filename=document_file.filename,
-        document_content_type=document_file.content_type,
-        document_file_size=file_size,
-        document_count=1,
-        # Vision settings
-        vision_provider=vision_provider,
-        vision_model=vision_model,
-        vision_status=VisionStatus.PENDING,
-        # Status
-        status=TranscriptionStatus.QUEUED,
-    )
-    
-    db.add(transcription)
-    db.commit()
-    db.refresh(transcription)
+    try:
+        # Create transcription record with document-only mode
+        transcription = Transcription(
+            user_id=current_user.id,
+            file_id=document_file_id,  # Use document as main file
+            file_path=str(document_file_path),
+            filename=document_file.filename,
+            original_filename=document_file.filename,
+            file_size=file_size,
+            content_type=document_file.content_type,
+            # Document-specific fields
+            processing_mode=ProcessingMode.DOCUMENT_ONLY,
+            has_document=True,
+            document_file_id=document_file_id,
+            document_file_path=str(document_file_path),
+            document_filename=document_file.filename,
+            document_content_type=document_file.content_type,
+            document_file_size=file_size,
+            document_count=1,
+            # Vision settings
+            vision_provider=vision_provider,
+            vision_model=vision_model,
+            vision_status=VisionStatus.PENDING,
+            # Status
+            status=TranscriptionStatus.QUEUED,
+        )
+        
+        db.add(transcription)
+        db.commit()
+        db.refresh(transcription)
+    except Exception as db_error:
+        logger.error(f"❌ Database error creating document transcription: {db_error}")
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "Database error",
+                "message": "Vision API columns may not exist. Please run migration: python add_vision_api_support.py",
+                "technical": str(db_error)
+            }
+        )
     
     logger.info(f"📄 Document-only transcription created: ID={transcription.id}, file={document_file.filename}")
     
