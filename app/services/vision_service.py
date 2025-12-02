@@ -19,6 +19,7 @@ Features:
 
 import os
 import io
+import re
 import base64
 import logging
 import json
@@ -316,7 +317,22 @@ class VisionService:
                 if response_text.endswith("```"):
                     response_text = response_text[:-3]
                 
-                result = json.loads(response_text.strip())
+                # Clean control characters that break JSON parsing
+                # Remove control characters except \n, \r, \t
+                response_text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', response_text.strip())
+                # Fix common escape issues
+                response_text = response_text.replace('\r\n', '\\n').replace('\r', '\\n')
+                
+                try:
+                    result = json.loads(response_text)
+                except json.JSONDecodeError:
+                    # Try to extract JSON from response if mixed with text
+                    json_match = re.search(r'\{[\s\S]*\}', response_text)
+                    if json_match:
+                        result = json.loads(json_match.group())
+                    else:
+                        raise
+                
                 result["processing_time"] = time.time() - start_time
                 result["provider"] = self.provider
                 result["model"] = self.model_name
@@ -515,7 +531,19 @@ Provide a concise, informative summary that captures the main points."""
             if response_text.endswith("```"):
                 response_text = response_text[:-3]
             
-            result = json.loads(response_text.strip())
+            # Clean control characters that break JSON parsing
+            response_text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', response_text.strip())
+            response_text = response_text.replace('\r\n', '\\n').replace('\r', '\\n')
+            
+            try:
+                result = json.loads(response_text)
+            except json.JSONDecodeError:
+                json_match = re.search(r'\{[\s\S]*\}', response_text)
+                if json_match:
+                    result = json.loads(json_match.group())
+                else:
+                    raise
+            
             result["processing_time"] = time.time() - start_time
             result["provider"] = self.provider
             result["model"] = self.model_name
