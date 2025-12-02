@@ -200,6 +200,24 @@ class TranscriptionResponse(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     
+    @field_validator('document_key_points', 'document_topics', 'combined_key_points', mode='before')
+    @classmethod
+    def parse_json_list_fields(cls, v):
+        """Parse JSON string fields to list"""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return parsed
+                return None
+            except:
+                return None
+        if isinstance(v, list):
+            return v
+        return None
+    
     @field_validator('translated_text', mode='before')
     @classmethod
     def parse_translated_text(cls, v):
