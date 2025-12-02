@@ -400,13 +400,18 @@ class GeminiService:
                 self.model_name = preferred_model
                 model_key = preferred_model.split("/")[-1]  # Extract short name for logging
             else:
+                # Use settings.TOGETHER_MODEL if no preferred_model provided
+                default_model = settings.TOGETHER_MODEL or "meta-llama/Meta-Llama-3.3-70B-Instruct-Turbo"
+                
                 # Legacy mapping for backward compatibility
                 together_model_mapping = {
                     "llama-3.1-405b-instruct-turbo": "meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo",
-                    "llama-3.3-70b-together": "meta-llama/Meta-Llama-3.3-70B-Instruct-Turbo"
+                    "llama-3.3-70b-together": "meta-llama/Meta-Llama-3.3-70B-Instruct-Turbo",
+                    # Handle Groq model names that might be passed by mistake
+                    "openai/gpt-oss-20b": "meta-llama/Meta-Llama-3.3-70B-Instruct-Turbo",  # Fallback
                 }
-                model_key = preferred_model if preferred_model else "llama-3.1-405b-instruct-turbo"
-                self.model_name = together_model_mapping.get(model_key, preferred_model or "meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo")
+                model_key = preferred_model if preferred_model else default_model
+                self.model_name = together_model_mapping.get(model_key, model_key if "/" in model_key else default_model)
             
             # Together AI specific token limits (context window constraints)
             # Calculate safe output limit: total_context - input_buffer
