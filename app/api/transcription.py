@@ -504,18 +504,19 @@ async def generate_lecture_notes(
             detail=f"Transcription not found: {transcription_id}"
         )
     
-    # Use enhanced_text if available, then cleaned_text, otherwise use original text
-    # Priority: enhanced_text (best) > cleaned_text (fillers removed) > text (raw Whisper)
+    # Use enhanced_text if available, then cleaned_text, document_text, otherwise use original text
+    # Priority: enhanced_text (best) > cleaned_text (fillers removed) > document_text (PDF) > text (raw Whisper)
     source_text = (
         transcription.enhanced_text or 
         transcription.cleaned_text or 
+        transcription.document_text or
         transcription.text
     )
     
     if not source_text:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No text available for lecture notes generation. Wait for transcription to complete."
+            detail="No text available for lecture notes generation. Wait for transcription or document analysis to complete."
         )
     
     # Import Gemini service
@@ -630,18 +631,19 @@ async def apply_custom_prompt(
             detail=f"Transcription not found: {transcription_id}"
         )
     
-    # Use enhanced_text if available, then cleaned_text, otherwise use original text
-    # Priority: enhanced_text (best) > cleaned_text (fillers removed) > text (raw Whisper)
+    # Use enhanced_text if available, then cleaned_text, document_text, otherwise use original text
+    # Priority: enhanced_text (best) > cleaned_text (fillers removed) > document_text (PDF) > text (raw Whisper)
     source_text = (
         transcription.enhanced_text or 
         transcription.cleaned_text or 
+        transcription.document_text or
         transcription.text
     )
     
     if not source_text:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No text available for custom prompt. Wait for transcription to complete."
+            detail="No text available for custom prompt. Wait for transcription or document analysis to complete."
         )
     
     if not custom_prompt or not custom_prompt.strip():
@@ -952,18 +954,27 @@ async def enhance_transcription(
             detail="Transcription not found"
         )
     
-    # Check if transcription is completed
-    if transcription.status != TranscriptionStatus.COMPLETED:
+    # Check if audio transcription is completed OR document analysis is completed
+    audio_completed = transcription.status == TranscriptionStatus.COMPLETED and transcription.text
+    document_completed = transcription.has_document and transcription.vision_status == "completed"
+    
+    if not audio_completed and not document_completed:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Transcription must be completed first (current status: {transcription.status.value})"
+            detail="Either audio transcription or document analysis must be completed"
         )
     
-    # Check if text exists
-    if not transcription.text:
+    # Get content for enhancement
+    content_for_enhance = None
+    if document_completed and transcription.document_text:
+        content_for_enhance = transcription.document_text
+    elif audio_completed and transcription.text:
+        content_for_enhance = transcription.text
+    
+    if not content_for_enhance:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No transcription text available to enhance"
+            detail="No content available to enhance"
         )
     
     # Get Gemini service
@@ -1133,25 +1144,29 @@ async def generate_exam_questions(
             detail="Transcription not found"
         )
     
-    # Validate status
-    if transcription.status != TranscriptionStatus.COMPLETED:
+    # Check if audio transcription is completed OR document analysis is completed
+    audio_completed = transcription.status == TranscriptionStatus.COMPLETED and transcription.text
+    document_completed = transcription.has_document and transcription.vision_status == "completed"
+    
+    if not audio_completed and not document_completed:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Transcription must be completed first. Current status: {transcription.status}"
+            detail="Either audio transcription or document analysis must be completed"
         )
     
-    # Use enhanced_text if available, then cleaned_text, otherwise use original text
-    # Priority: enhanced_text (best) > cleaned_text (fillers removed) > text (raw Whisper)
+    # Use enhanced_text if available, then cleaned_text, document_text, otherwise use original text
+    # Priority: enhanced_text (best) > cleaned_text (fillers removed) > document_text (PDF) > text (raw Whisper)
     source_text = (
         transcription.enhanced_text or 
         transcription.cleaned_text or 
+        transcription.document_text or
         transcription.text
     )
     
     if not source_text:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No transcription text available"
+            detail="No content available for exam questions generation"
         )
     
     try:

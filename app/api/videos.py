@@ -68,12 +68,31 @@ async def generate_video(
         if not transcription:
             raise HTTPException(status_code=404, detail="Transcription not found")
         
-        if not transcription.text:
-            raise HTTPException(status_code=400, detail="Transcription has no text")
+        # Check if audio transcription is completed OR document analysis is completed
+        audio_completed = transcription.status == "completed" and transcription.text
+        document_completed = transcription.has_document and transcription.vision_status == "completed"
+        
+        if not audio_completed and not document_completed:
+            raise HTTPException(
+                status_code=400,
+                detail="Either audio transcription or document analysis must be completed"
+            )
+        
+        # Get content for video generation
+        content_for_video = None
+        if document_completed and transcription.document_summary:
+            content_for_video = transcription.document_summary
+        elif document_completed and transcription.document_text:
+            content_for_video = transcription.document_text[:5000]
+        elif audio_completed and transcription.text:
+            content_for_video = transcription.text
+        
+        if not content_for_video:
+            raise HTTPException(status_code=400, detail="No content available for video generation")
         
         # 2. Estimate cost
         video_gen = get_video_generator_service()
-        cost_estimate = video_gen.estimate_video_cost(transcription.text)
+        cost_estimate = video_gen.estimate_video_cost(content_for_video)
         required_credits = cost_estimate["total_credits"]
         
         logger.info(f"💰 Estimated cost: {required_credits} credits")

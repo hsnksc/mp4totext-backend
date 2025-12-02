@@ -98,16 +98,32 @@ async def generate_images(
             detail="Transcription not found or you don't have access"
         )
     
-    if transcription.status.value != "completed":
+    # Check if audio transcription is completed OR document analysis is completed
+    audio_completed = transcription.status == "completed" and transcription.text
+    document_completed = transcription.has_document and transcription.vision_status == "completed"
+    
+    if not audio_completed and not document_completed:
         raise HTTPException(
             status_code=400,
-            detail=f"Transcription must be completed (current status: {transcription.status.value})"
+            detail="Either audio transcription or document analysis must be completed"
         )
     
-    if not transcription.text:
+    # Get content for image generation - prefer document_summary, then text
+    content_for_image = None
+    if document_completed and transcription.document_summary:
+        content_for_image = transcription.document_summary
+        logger.info("📄 Using document_summary for image generation")
+    elif document_completed and transcription.document_text:
+        content_for_image = transcription.document_text[:2000]  # Limit for prompt
+        logger.info("📄 Using document_text for image generation")
+    elif audio_completed and transcription.text:
+        content_for_image = transcription.text
+        logger.info("🎵 Using audio transcription text for image generation")
+    
+    if not content_for_image:
         raise HTTPException(
             status_code=400,
-            detail="Transcription text is empty"
+            detail="No content available for image generation"
         )
     
     # 2. Kredi kontrolü - Her görsel için 1 kredi

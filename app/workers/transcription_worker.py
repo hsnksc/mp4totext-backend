@@ -1374,11 +1374,34 @@ def generate_transcript_images(
                 "message": "Transcription not found"
             }
         
-        if not transcription.text:
-            logger.error(f"❌ Transcription {transcription_id} has no text")
+        # Check if audio transcription is completed OR document analysis is completed
+        audio_completed = transcription.status == "completed" and transcription.text
+        document_completed = transcription.has_document and transcription.vision_status == "completed"
+        
+        if not audio_completed and not document_completed:
+            logger.error(f"❌ Transcription {transcription_id} has no completed content")
             return {
                 "status": "error",
-                "message": "Transcription text is empty"
+                "message": "Either audio transcription or document analysis must be completed"
+            }
+        
+        # Get content for image generation - prefer document_summary, then text
+        content_for_image = None
+        if document_completed and transcription.document_summary:
+            content_for_image = transcription.document_summary
+            logger.info("📄 Using document_summary for image generation")
+        elif document_completed and transcription.document_text:
+            content_for_image = transcription.document_text[:2000]  # Limit for prompt
+            logger.info("📄 Using document_text for image generation")
+        elif audio_completed and transcription.text:
+            content_for_image = transcription.text
+            logger.info("🎵 Using audio transcription text for image generation")
+        
+        if not content_for_image:
+            logger.error(f"❌ Transcription {transcription_id} has no content for image generation")
+            return {
+                "status": "error",
+                "message": "No content available for image generation"
             }
         
         logger.info(f"✅ Found transcription: {transcription.filename}")
@@ -1389,7 +1412,7 @@ def generate_transcript_images(
         image_gen = get_image_generator()
         
         result = image_gen.generate_images_from_transcript_sync(
-            transcript_text=transcription.text,
+            transcript_text=content_for_image,
             num_images=num_images,
             style=style,
             model_type=model_type,
