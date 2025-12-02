@@ -2071,7 +2071,8 @@ def process_vision_task(self, transcription_id: int) -> Dict[str, Any]:
         db.commit()
         
         # Check if combined analysis is needed
-        if transcription.processing_mode == ProcessingMode.COMBINED and transcription.text:
+        # processing_mode is now a String, not enum
+        if transcription.processing_mode == "combined" and transcription.text:
             self.update_state(
                 state='PROGRESS',
                 meta={'current': 70, 'total': 100, 'status': 'Creating combined analysis...'}
@@ -2115,7 +2116,8 @@ def process_vision_task(self, transcription_id: int) -> Dict[str, Any]:
             vision_credits = 0.3  # Single image
         
         # Add combined analysis cost if applicable
-        if transcription.processing_mode == ProcessingMode.COMBINED and transcription.combined_analysis:
+        # processing_mode is now a String, not enum
+        if transcription.processing_mode == "combined" and transcription.combined_analysis:
             vision_credits += 2.0  # Combined analysis cost
         
         # Deduct credits
