@@ -158,6 +158,30 @@ class TranscriptionResponse(BaseModel):
     custom_model_path: Optional[str] = Field(None, description="Path to custom speaker model")
     original_filename: Optional[str] = Field(None, description="Original uploaded filename")
     
+    # 📄 Vision API / Document Analysis Fields
+    has_audio: Optional[bool] = Field(None, description="Has audio file")
+    has_document: Optional[bool] = Field(None, description="Has document file")
+    processing_mode: Optional[str] = Field(None, description="Processing mode (audio_only, document_only, combined)")
+    document_file_id: Optional[str] = Field(None, description="Document file ID in storage")
+    document_filename: Optional[str] = Field(None, description="Original document filename")
+    document_file_size: Optional[int] = Field(None, description="Document file size in bytes")
+    document_mime_type: Optional[str] = Field(None, description="Document MIME type")
+    document_page_count: Optional[int] = Field(None, description="Number of pages in document")
+    document_text: Optional[str] = Field(None, description="Extracted text from document")
+    document_analysis: Optional[str] = Field(None, description="AI analysis of document")
+    document_summary: Optional[str] = Field(None, description="Document summary")
+    document_key_points: Optional[List[str]] = Field(None, description="Key points from document")
+    document_topics: Optional[List[str]] = Field(None, description="Topics extracted from document")
+    vision_provider: Optional[str] = Field(None, description="Vision API provider (gemini, openai)")
+    vision_model: Optional[str] = Field(None, description="Vision model used")
+    vision_status: Optional[str] = Field(None, description="Vision processing status")
+    vision_error: Optional[str] = Field(None, description="Vision processing error message")
+    vision_processing_time: Optional[float] = Field(None, description="Vision processing time in seconds")
+    combined_summary: Optional[str] = Field(None, description="Combined audio+document summary")
+    combined_insights: Optional[str] = Field(None, description="Combined insights from both sources")
+    combined_key_points: Optional[List[str]] = Field(None, description="Combined key points")
+    enable_combined_analysis: Optional[bool] = Field(None, description="Enable combined analysis flag")
+    
     # File info
     file_size: Optional[int] = Field(None, description="File size in bytes")
     
