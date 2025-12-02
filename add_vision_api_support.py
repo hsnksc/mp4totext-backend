@@ -26,8 +26,33 @@ import sqlite3
 import os
 from datetime import datetime
 
-# Database path
-DB_PATH = os.path.join(os.path.dirname(__file__), "mp4totext.db")
+# Database path - check multiple possible locations
+def get_db_path():
+    """Find the database file in possible locations"""
+    possible_paths = [
+        os.environ.get("DATABASE_PATH", ""),  # Environment variable
+        os.path.join(os.path.dirname(__file__), "mp4totext.db"),  # Same directory
+        "/app/mp4totext.db",  # Docker default
+        "/app/data/mp4totext.db",  # Docker with data volume
+        "/data/mp4totext.db",  # Coolify data volume
+        "./mp4totext.db",  # Current directory
+    ]
+    
+    for path in possible_paths:
+        if path and os.path.exists(path):
+            return path
+    
+    # If not found, check if DATABASE_URL is set (extract path from sqlite:/// URL)
+    db_url = os.environ.get("DATABASE_URL", "")
+    if db_url.startswith("sqlite:///"):
+        db_path = db_url.replace("sqlite:///", "")
+        if os.path.exists(db_path):
+            return db_path
+    
+    # Default fallback
+    return os.path.join(os.path.dirname(__file__), "mp4totext.db")
+
+DB_PATH = get_db_path()
 
 def add_vision_columns():
     """Add Vision API columns to transcriptions table"""

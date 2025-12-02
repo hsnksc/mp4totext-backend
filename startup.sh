@@ -6,6 +6,24 @@ set -e
 
 echo "🚀 Starting MP4toText Backend..."
 
+# Find database path
+echo "🔍 Looking for database..."
+if [ -f "/data/mp4totext.db" ]; then
+    export DATABASE_PATH="/data/mp4totext.db"
+    echo "  ✅ Found: /data/mp4totext.db"
+elif [ -f "/app/data/mp4totext.db" ]; then
+    export DATABASE_PATH="/app/data/mp4totext.db"
+    echo "  ✅ Found: /app/data/mp4totext.db"
+elif [ -f "/app/mp4totext.db" ]; then
+    export DATABASE_PATH="/app/mp4totext.db"
+    echo "  ✅ Found: /app/mp4totext.db"
+elif [ -f "./mp4totext.db" ]; then
+    export DATABASE_PATH="./mp4totext.db"
+    echo "  ✅ Found: ./mp4totext.db"
+else
+    echo "  ⚠️ Database not found, will be created on first run"
+fi
+
 # Run database migrations
 echo "📊 Running database migrations..."
 cd /app
