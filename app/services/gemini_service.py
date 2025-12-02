@@ -876,11 +876,15 @@ Return a JSON object with this EXACT format (no markdown, no code blocks):
 
 Begin:"""
 
-            # Call AI service (Gemini/OpenAI)
-            if not self.use_openai:  # Gemini
-                result = await self._enhance_with_gemini(enhancement_prompt, text, language)
-            else:  # OpenAI
+            # Call AI service based on provider (Groq, Together, OpenAI, or Gemini)
+            if self.use_groq:
+                result = await self._enhance_with_groq(enhancement_prompt, text, language)
+            elif self.use_together:
+                result = await self._enhance_with_together(enhancement_prompt, text, language)
+            elif self.use_openai:
                 result = await self._enhance_with_openai(enhancement_prompt, text, language)
+            else:  # Gemini (default)
+                result = await self._enhance_with_gemini(enhancement_prompt, text, language)
             
             # Add metadata
             result.update({
@@ -989,6 +993,87 @@ Begin:"""
             }
         except Exception as e:
             logger.error(f"❌ Groq API error: {e}")
+            return {
+                "enhanced_text": original_text,
+                "summary": f"Enhancement failed: {str(e)}",
+                "improvements": [],
+                "word_count": len(original_text.split())
+            }
+    
+    async def _enhance_with_together(
+        self,
+        prompt: str,
+        original_text: str,
+        language: str
+    ) -> Dict[str, Any]:
+        """Enhance text using Together AI (Llama 405B, etc.)"""
+        logger.info("🚀 Calling Together AI API...")
+        
+        try:
+            # Together AI uses OpenAI-compatible API
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": "You are a professional transcription editor. Return only valid JSON with enhanced_text, summary, and improvements fields."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=self.max_output_tokens
+            )
+            
+            response_text = response.choices[0].message.content
+            logger.info(f"✅ Together AI response received ({len(response_text)} chars)")
+            
+            # Parse JSON response - Together AI may not return clean JSON
+            import json
+            import re
+            
+            # Clean response - remove markdown code blocks
+            response_text = re.sub(r'^```json\s*', '', response_text.strip())
+            response_text = re.sub(r'^```\s*', '', response_text)
+            response_text = re.sub(r'\s*```$', '', response_text)
+            
+            # Extract JSON if wrapped in text
+            json_match = re.search(r'\{[\s\S]*\}', response_text)
+            if json_match:
+                response_text = json_match.group(0)
+            
+            try:
+                result = json.loads(response_text)
+            except json.JSONDecodeError:
+                # If JSON parsing fails, use the response as enhanced text
+                logger.warning("⚠️ Together AI did not return valid JSON, using raw response")
+                result = {
+                    "enhanced_text": response_text,
+                    "summary": "",
+                    "improvements": []
+                }
+            
+            # Normalize response
+            if "text" in result and "enhanced_text" not in result:
+                result["enhanced_text"] = result["text"]
+            
+            if "enhanced_text" not in result or not result["enhanced_text"]:
+                result["enhanced_text"] = original_text
+                logger.warning("⚠️ No enhanced_text in Together response, using original")
+            
+            if not result.get("summary"):
+                result["summary"] = ""
+            if not result.get("improvements"):
+                result["improvements"] = []
+            if not result.get("word_count"):
+                result["word_count"] = len(result["enhanced_text"].split())
+            
+            logger.info(f"✅ Together AI enhancement completed:")
+            logger.info(f"   Original: {len(original_text)} chars")
+            logger.info(f"   Enhanced: {len(result.get('enhanced_text', ''))} chars")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Together AI API error: {e}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
             return {
                 "enhanced_text": original_text,
                 "summary": f"Enhancement failed: {str(e)}",
