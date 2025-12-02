@@ -79,6 +79,9 @@ ffmpeg-python==0.2.0
 # Image Processing (for video generation)
 Pillow>=10.0.0
 
+# PDF Processing (for Vision API - document analysis)
+PyMuPDF>=1.24.0
+
 # Speaker Recognition (REMOVED - Using AssemblyAI's built-in diarization)
 # resemblyzer==0.1.1.dev0
 # pyannote.audio==3.1.1  
