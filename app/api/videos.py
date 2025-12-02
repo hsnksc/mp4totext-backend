@@ -69,8 +69,12 @@ async def generate_video(
             raise HTTPException(status_code=404, detail="Transcription not found")
         
         # Check if audio transcription is completed OR document analysis is completed
-        audio_completed = transcription.status == "completed" and transcription.text
-        document_completed = transcription.has_document and transcription.vision_status == "completed"
+        # Handle status as string or enum
+        status_value = str(getattr(transcription.status, 'value', transcription.status)) if transcription.status else None
+        audio_completed = status_value == "completed" and transcription.text
+        document_completed = transcription.has_document and transcription.vision_status == "completed" and (transcription.document_text or transcription.document_summary)
+        
+        logger.info(f"🔍 Content check: status={status_value}, audio_completed={audio_completed}, document_completed={document_completed}")
         
         if not audio_completed and not document_completed:
             raise HTTPException(
