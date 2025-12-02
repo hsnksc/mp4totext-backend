@@ -2129,7 +2129,7 @@ def process_vision_task(self, transcription_id: int) -> Dict[str, Any]:
                 metadata={
                     "vision_provider": transcription.vision_provider,
                     "page_count": page_count,
-                    "processing_mode": transcription.processing_mode.value if transcription.processing_mode else "unknown"
+                    "processing_mode": transcription.processing_mode or "unknown"  # processing_mode is now a String, not enum
                 }
             )
             logger.info(f"💰 Deducted {vision_credits} credits for Vision processing")
