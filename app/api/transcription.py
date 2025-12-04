@@ -2637,50 +2637,115 @@ async def youtube_download(
     
     logger.info(f"📺 Video ID: {video_id}")
     
+    async def try_youtube_mp36(client: httpx.AsyncClient, video_id: str) -> tuple[bytes, str]:
+        """Try youtube-mp36 API"""
+        logger.info("🔄 Trying youtube-mp36 API...")
+        response = await client.get(
+            f"https://youtube-mp36.p.rapidapi.com/dl?id={video_id}",
+            headers={
+                "x-rapidapi-key": RAPIDAPI_KEY,
+                "x-rapidapi-host": "youtube-mp36.p.rapidapi.com"
+            }
+        )
+        response.raise_for_status()
+        data = response.json()
+        
+        if data.get("status") != "ok":
+            raise Exception(f"API error: {data.get('msg', 'Unknown error')}")
+        
+        download_url = data.get("link")
+        if not download_url:
+            raise Exception("No download link received")
+        
+        video_title = data.get("title", "youtube_audio")
+        
+        # Download with retry
+        for attempt in range(3):
+            try:
+                mp3_response = await client.get(download_url, timeout=300.0)
+                mp3_response.raise_for_status()
+                return mp3_response.content, video_title
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404 and attempt < 2:
+                    logger.warning(f"⚠️ Download link expired, retrying API call ({attempt + 1}/3)...")
+                    # Get fresh link
+                    response = await client.get(
+                        f"https://youtube-mp36.p.rapidapi.com/dl?id={video_id}",
+                        headers={
+                            "x-rapidapi-key": RAPIDAPI_KEY,
+                            "x-rapidapi-host": "youtube-mp36.p.rapidapi.com"
+                        }
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    if data.get("status") == "ok" and data.get("link"):
+                        download_url = data.get("link")
+                        continue
+                raise
+        raise Exception("Failed after 3 attempts")
+    
+    async def try_ytstream(client: httpx.AsyncClient, video_id: str) -> tuple[bytes, str]:
+        """Try ytstream API as fallback"""
+        logger.info("🔄 Trying ytstream API...")
+        response = await client.get(
+            f"https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id={video_id}",
+            headers={
+                "x-rapidapi-key": RAPIDAPI_KEY,
+                "x-rapidapi-host": "ytstream-download-youtube-videos.p.rapidapi.com"
+            }
+        )
+        response.raise_for_status()
+        data = response.json()
+        
+        video_title = data.get("title", "youtube_audio")
+        
+        # Find audio format
+        formats = data.get("formats", []) + data.get("adaptiveFormats", [])
+        audio_url = None
+        
+        for fmt in formats:
+            mime = fmt.get("mimeType", "")
+            if "audio" in mime:
+                audio_url = fmt.get("url")
+                if audio_url:
+                    break
+        
+        if not audio_url:
+            raise Exception("No audio format found")
+        
+        mp3_response = await client.get(audio_url, timeout=300.0)
+        mp3_response.raise_for_status()
+        return mp3_response.content, video_title
+    
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
-            # Step 1: Call RapidAPI to get MP3 link
-            logger.info("🔄 Calling RapidAPI YouTube MP3...")
+            audio_content = None
+            video_title = filename
+            last_error = None
             
-            response = await client.get(
-                f"https://youtube-mp36.p.rapidapi.com/dl?id={video_id}",
-                headers={
-                    "x-rapidapi-key": RAPIDAPI_KEY,
-                    "x-rapidapi-host": "youtube-mp36.p.rapidapi.com"
-                }
-            )
-            response.raise_for_status()
+            # Try youtube-mp36 first
+            try:
+                audio_content, video_title = await try_youtube_mp36(client, video_id)
+                logger.info(f"✅ youtube-mp36 succeeded")
+            except Exception as e:
+                logger.warning(f"⚠️ youtube-mp36 failed: {e}")
+                last_error = e
             
-            data = response.json()
-            logger.info(f"📥 RapidAPI response: status={data.get('status')}, title={data.get('title', '')[:50]}")
+            # Fallback to ytstream if first method failed
+            if audio_content is None:
+                try:
+                    audio_content, video_title = await try_ytstream(client, video_id)
+                    logger.info(f"✅ ytstream succeeded")
+                except Exception as e:
+                    logger.warning(f"⚠️ ytstream also failed: {e}")
+                    # Raise the original error
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"All YouTube download methods failed. Last error: {last_error or e}"
+                    )
             
-            if data.get("status") != "ok":
-                error_msg = data.get("msg", "Conversion failed")
-                logger.error(f"❌ RapidAPI error: {error_msg}")
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"YouTube conversion failed: {error_msg}"
-                )
-            
-            download_url = data.get("link")
-            if not download_url:
-                raise HTTPException(
-                    status_code=502,
-                    detail="No download link received from RapidAPI"
-                )
-            
-            video_title = data.get("title", filename)
-            
-            # Step 2: Download the MP3 file
-            logger.info(f"📥 Downloading MP3: {download_url[:80]}...")
-            
-            mp3_response = await client.get(download_url, timeout=300.0)
-            mp3_response.raise_for_status()
-            
-            audio_content = mp3_response.content
             file_size = len(audio_content)
-            
-            logger.info(f"✅ Downloaded {file_size} bytes ({file_size/1024/1024:.2f} MB)")
+            logger.info(f"📥 Downloaded {file_size} bytes ({file_size/1024/1024:.2f} MB)")
             
             if file_size < 10000:
                 raise HTTPException(
