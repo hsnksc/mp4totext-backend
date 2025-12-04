@@ -2582,41 +2582,30 @@ async def youtube_download(
     current_user: User = Depends(get_current_active_user)
 ):
     """
-    Download YouTube audio via RapidAPI YouTube MP3 service.
+    Download YouTube audio using yt-dlp.
     
     This endpoint:
-    1. Extracts video ID from YouTube URL
-    2. Calls RapidAPI to convert video to MP3
-    3. Downloads MP3 and returns as stream
+    1. Validates YouTube URL
+    2. Downloads audio using yt-dlp
+    3. Returns audio as stream
     
     Args:
         youtube_url: YouTube video URL
         filename: Desired filename (without extension)
     
     Returns:
-        Audio file stream (MP3)
+        Audio file stream (MP3/M4A)
     """
     from fastapi.responses import StreamingResponse
-    import httpx
+    import subprocess
+    import tempfile
     import re
     import os
+    import shutil
     
     logger.info(f"🎬 YouTube download endpoint called: url={youtube_url}, filename={filename}")
     
-    # Get RapidAPI key from environment
-    RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
-    logger.info(f"🔑 RAPIDAPI_KEY exists: {bool(RAPIDAPI_KEY)}, length: {len(RAPIDAPI_KEY) if RAPIDAPI_KEY else 0}")
-    
-    if not RAPIDAPI_KEY:
-        logger.error("❌ RAPIDAPI_KEY not configured in environment variables")
-        raise HTTPException(
-            status_code=503,
-            detail="YouTube download service not configured. RAPIDAPI_KEY environment variable is missing."
-        )
-    
-    logger.info(f"🎬 YouTube download request via RapidAPI: {youtube_url}")
-    
-    # Extract video ID from URL
+    # Validate YouTube URL
     video_id = None
     patterns = [
         r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/)([^&\n?#]+)',
@@ -2637,146 +2626,113 @@ async def youtube_download(
     
     logger.info(f"📺 Video ID: {video_id}")
     
-    async def try_youtube_mp36(client: httpx.AsyncClient, video_id: str) -> tuple[bytes, str]:
-        """Try youtube-mp36 API"""
-        logger.info("🔄 Trying youtube-mp36 API...")
-        response = await client.get(
-            f"https://youtube-mp36.p.rapidapi.com/dl?id={video_id}",
-            headers={
-                "x-rapidapi-key": RAPIDAPI_KEY,
-                "x-rapidapi-host": "youtube-mp36.p.rapidapi.com"
-            }
-        )
-        response.raise_for_status()
-        data = response.json()
-        
-        if data.get("status") != "ok":
-            raise Exception(f"API error: {data.get('msg', 'Unknown error')}")
-        
-        download_url = data.get("link")
-        if not download_url:
-            raise Exception("No download link received")
-        
-        video_title = data.get("title", "youtube_audio")
-        
-        # Download with retry
-        for attempt in range(3):
-            try:
-                mp3_response = await client.get(download_url, timeout=300.0)
-                mp3_response.raise_for_status()
-                return mp3_response.content, video_title
-            except httpx.HTTPStatusError as e:
-                if e.response.status_code == 404 and attempt < 2:
-                    logger.warning(f"⚠️ Download link expired, retrying API call ({attempt + 1}/3)...")
-                    # Get fresh link
-                    response = await client.get(
-                        f"https://youtube-mp36.p.rapidapi.com/dl?id={video_id}",
-                        headers={
-                            "x-rapidapi-key": RAPIDAPI_KEY,
-                            "x-rapidapi-host": "youtube-mp36.p.rapidapi.com"
-                        }
-                    )
-                    response.raise_for_status()
-                    data = response.json()
-                    if data.get("status") == "ok" and data.get("link"):
-                        download_url = data.get("link")
-                        continue
-                raise
-        raise Exception("Failed after 3 attempts")
-    
-    async def try_ytstream(client: httpx.AsyncClient, video_id: str) -> tuple[bytes, str]:
-        """Try ytstream API as fallback"""
-        logger.info("🔄 Trying ytstream API...")
-        response = await client.get(
-            f"https://ytstream-download-youtube-videos.p.rapidapi.com/dl?id={video_id}",
-            headers={
-                "x-rapidapi-key": RAPIDAPI_KEY,
-                "x-rapidapi-host": "ytstream-download-youtube-videos.p.rapidapi.com"
-            }
-        )
-        response.raise_for_status()
-        data = response.json()
-        
-        video_title = data.get("title", "youtube_audio")
-        
-        # Find audio format
-        formats = data.get("formats", []) + data.get("adaptiveFormats", [])
-        audio_url = None
-        
-        for fmt in formats:
-            mime = fmt.get("mimeType", "")
-            if "audio" in mime:
-                audio_url = fmt.get("url")
-                if audio_url:
-                    break
-        
-        if not audio_url:
-            raise Exception("No audio format found")
-        
-        mp3_response = await client.get(audio_url, timeout=300.0)
-        mp3_response.raise_for_status()
-        return mp3_response.content, video_title
+    # Create temp directory
+    temp_dir = tempfile.mkdtemp()
+    output_template = os.path.join(temp_dir, "audio.%(ext)s")
     
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            audio_content = None
-            video_title = filename
-            last_error = None
-            
-            # Try youtube-mp36 first
-            try:
-                audio_content, video_title = await try_youtube_mp36(client, video_id)
-                logger.info(f"✅ youtube-mp36 succeeded")
-            except Exception as e:
-                logger.warning(f"⚠️ youtube-mp36 failed: {e}")
-                last_error = e
-            
-            # Fallback to ytstream if first method failed
-            if audio_content is None:
-                try:
-                    audio_content, video_title = await try_ytstream(client, video_id)
-                    logger.info(f"✅ ytstream succeeded")
-                except Exception as e:
-                    logger.warning(f"⚠️ ytstream also failed: {e}")
-                    # Raise the original error
-                    raise HTTPException(
-                        status_code=502,
-                        detail=f"All YouTube download methods failed. Last error: {last_error or e}"
-                    )
-            
-            file_size = len(audio_content)
-            logger.info(f"📥 Downloaded {file_size} bytes ({file_size/1024/1024:.2f} MB)")
-            
-            if file_size < 10000:
-                raise HTTPException(
-                    status_code=502,
-                    detail="Downloaded file is too small. The video may be restricted."
-                )
-            
-            # Create safe filename
-            safe_filename = re.sub(r'[^a-zA-Z0-9\s\-_]', '', video_title)[:100]
-            if not safe_filename:
-                safe_filename = filename
-            safe_filename = f"{safe_filename}.mp3"
-            
-            # Return as streaming response
-            from io import BytesIO
-            
-            return StreamingResponse(
-                BytesIO(audio_content),
-                media_type="audio/mpeg",
-                headers={
-                    "Content-Disposition": f'attachment; filename="{safe_filename}"',
-                    "Content-Length": str(file_size),
-                    "X-Video-Title": video_title[:100]
-                }
+        # Check if yt-dlp is available
+        yt_dlp_path = shutil.which("yt-dlp")
+        if not yt_dlp_path:
+            logger.error("❌ yt-dlp not found in PATH")
+            raise HTTPException(
+                status_code=503,
+                detail="YouTube download service not available. yt-dlp not installed."
             )
-            
+        
+        logger.info(f"🔧 Using yt-dlp: {yt_dlp_path}")
+        
+        # Build yt-dlp command
+        cmd = [
+            yt_dlp_path,
+            "-x",  # Extract audio
+            "--audio-format", "mp3",  # Convert to mp3
+            "--audio-quality", "128K",  # Good quality, smaller size
+            "-o", output_template,
+            "--no-playlist",  # Don't download playlist
+            "--no-warnings",
+            "--quiet",
+            "--no-progress",
+            youtube_url
+        ]
+        
+        logger.info(f"🔄 Running yt-dlp...")
+        
+        # Run yt-dlp
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 minute timeout
+        )
+        
+        if result.returncode != 0:
+            logger.error(f"❌ yt-dlp failed: {result.stderr}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"YouTube download failed: {result.stderr[:200] if result.stderr else 'Unknown error'}"
+            )
+        
+        # Find downloaded file
+        downloaded_file = None
+        for f in os.listdir(temp_dir):
+            if f.startswith("audio."):
+                downloaded_file = os.path.join(temp_dir, f)
+                break
+        
+        if not downloaded_file or not os.path.exists(downloaded_file):
+            logger.error("❌ Downloaded file not found")
+            raise HTTPException(
+                status_code=502,
+                detail="Download completed but file not found"
+            )
+        
+        file_size = os.path.getsize(downloaded_file)
+        logger.info(f"✅ Downloaded {file_size} bytes ({file_size/1024/1024:.2f} MB)")
+        
+        if file_size < 10000:
+            raise HTTPException(
+                status_code=502,
+                detail="Downloaded file is too small. The video may be restricted."
+            )
+        
+        # Read file content
+        with open(downloaded_file, "rb") as f:
+            audio_content = f.read()
+        
+        # Create safe filename
+        safe_filename = re.sub(r'[^a-zA-Z0-9\s\-_]', '', filename)[:100]
+        if not safe_filename:
+            safe_filename = "youtube_audio"
+        
+        # Get extension from downloaded file
+        ext = os.path.splitext(downloaded_file)[1] or ".mp3"
+        safe_filename = f"{safe_filename}{ext}"
+        
+        # Clean up temp directory
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        
+        # Return as streaming response
+        from io import BytesIO
+        
+        return StreamingResponse(
+            BytesIO(audio_content),
+            media_type="audio/mpeg",
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_filename}"',
+                "Content-Length": str(file_size),
+                "X-Video-Title": filename[:100]
+            }
+        )
+        
     except HTTPException:
+        shutil.rmtree(temp_dir, ignore_errors=True)
         raise
-    except httpx.TimeoutException:
-        logger.error("❌ RapidAPI/Download timeout")
+    except subprocess.TimeoutExpired:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        logger.error("❌ yt-dlp timeout")
         raise HTTPException(status_code=504, detail="Download timeout. Please try again.")
     except Exception as e:
+        shutil.rmtree(temp_dir, ignore_errors=True)
         logger.error(f"❌ YouTube download error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to download YouTube video: {str(e)}")
