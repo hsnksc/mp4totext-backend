@@ -2609,6 +2609,7 @@ async def youtube_download(
     
     async def get_cobalt_download_url(client: httpx.AsyncClient, youtube_url: str) -> str:
         """Try to get download URL from Cobalt instances"""
+        last_error = None
         for instance in COBALT_INSTANCES:
             try:
                 logger.info(f"🔄 Trying Cobalt instance: {instance}")
@@ -2628,19 +2629,27 @@ async def youtube_download(
                     timeout=30.0
                 )
                 
+                logger.info(f"Cobalt response status: {response.status_code}")
+                
                 if response.status_code != 200:
-                    logger.warning(f"Cobalt {instance} returned {response.status_code}")
+                    logger.warning(f"Cobalt {instance} returned {response.status_code}: {response.text[:200]}")
+                    last_error = f"Cobalt returned {response.status_code}"
                     continue
                 
                 data = response.json()
+                logger.info(f"Cobalt response data: {data}")
                 
                 if data.get("status") == "error":
-                    logger.warning(f"Cobalt {instance} error: {data.get('error', {}).get('code')}")
+                    error_code = data.get('error', {}).get('code', 'unknown')
+                    logger.warning(f"Cobalt {instance} error: {error_code}")
+                    last_error = f"Cobalt error: {error_code}"
                     continue
                 
                 if data.get("status") in ["tunnel", "redirect"]:
-                    logger.info(f"✅ Got download URL from {instance}")
-                    return data.get("url")
+                    url = data.get("url")
+                    if url:
+                        logger.info(f"✅ Got download URL from {instance}: {url[:80]}...")
+                        return url
                 
                 if data.get("status") == "picker":
                     picker = data.get("picker", [])
@@ -2651,11 +2660,14 @@ async def youtube_download(
                     if picker and picker[0].get("url"):
                         return picker[0]["url"]
                 
+                last_error = f"Unexpected Cobalt status: {data.get('status')}"
+                
             except Exception as e:
                 logger.warning(f"Cobalt {instance} failed: {e}")
+                last_error = str(e)
                 continue
         
-        raise HTTPException(status_code=503, detail="All Cobalt servers failed")
+        raise HTTPException(status_code=503, detail=f"All Cobalt servers failed. Last error: {last_error}")
     
     try:
         async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
@@ -2667,6 +2679,7 @@ async def youtube_download(
             response = await client.get(download_url)
             
             if response.status_code != 200:
+                logger.error(f"❌ Download failed with status {response.status_code}")
                 raise HTTPException(
                     status_code=response.status_code,
                     detail=f"Failed to download audio: {response.status_code}"
@@ -2674,6 +2687,15 @@ async def youtube_download(
             
             content = response.content
             content_type = response.headers.get('content-type', 'audio/mpeg')
+            
+            # Validate content
+            if len(content) < 1000:  # Less than 1KB is suspicious
+                logger.error(f"❌ Downloaded content too small: {len(content)} bytes")
+                logger.error(f"Content preview: {content[:500]}")
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Downloaded file is too small ({len(content)} bytes). The video may be unavailable."
+                )
             
             logger.info(f"✅ Downloaded {len(content)} bytes ({len(content)/1024/1024:.2f} MB)")
             
