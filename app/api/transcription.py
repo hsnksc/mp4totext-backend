@@ -2572,7 +2572,129 @@ async def get_vision_status(
 
 
 # ============================================================================
-# YOUTUBE AUDIO PROXY VIA RAPIDAPI
+# COBALT API PROXY (for CORS bypass)
+# ============================================================================
+
+@router.post("/cobalt-proxy")
+async def cobalt_proxy(
+    youtube_url: str = Form(...),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Proxy endpoint for Cobalt API to bypass CORS.
+    
+    This endpoint:
+    1. Calls Cobalt API from backend (no CORS issues)
+    2. Returns the direct download URL to frontend
+    3. Frontend downloads the audio directly from Cobalt's CDN
+    
+    The actual download happens in the user's browser, not on our server.
+    """
+    import httpx
+    import re
+    
+    logger.info(f"🎵 Cobalt proxy called for: {youtube_url}")
+    
+    # Validate YouTube URL
+    video_id = None
+    patterns = [
+        r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/)([^&\n?#]+)',
+        r'^([a-zA-Z0-9_-]{11})$'
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, youtube_url)
+        if match:
+            video_id = match.group(1)
+            break
+    
+    if not video_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid YouTube URL"
+        )
+    
+    # Cobalt API instances to try
+    cobalt_instances = [
+        "https://api.cobalt.tools",
+        "https://co.wuk.sh",
+        "https://cobalt-api.hyper.lol",
+    ]
+    
+    last_error = None
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for instance in cobalt_instances:
+            try:
+                logger.info(f"🔄 Trying Cobalt instance: {instance}")
+                
+                response = await client.post(
+                    f"{instance}/api/json",
+                    json={
+                        "url": youtube_url,
+                        "aFormat": "mp3",
+                        "isAudioOnly": True,
+                        "filenamePattern": "basic",
+                    },
+                    headers={
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                    }
+                )
+                
+                if response.status_code != 200:
+                    logger.warning(f"⚠️ Cobalt {instance} returned {response.status_code}")
+                    continue
+                
+                data = response.json()
+                logger.info(f"📥 Cobalt response: {data}")
+                
+                if data.get("status") == "error":
+                    last_error = data.get("text", "Cobalt API error")
+                    continue
+                
+                # Get download URL based on response type
+                download_url = None
+                
+                if data.get("status") in ["redirect", "stream"]:
+                    download_url = data.get("url")
+                elif data.get("status") == "picker" and data.get("picker"):
+                    # Find audio option in picker
+                    picker = data.get("picker", [])
+                    for item in picker:
+                        if item.get("type") == "audio":
+                            download_url = item.get("url")
+                            break
+                    if not download_url and picker:
+                        download_url = picker[0].get("url")
+                
+                if download_url:
+                    logger.info(f"✅ Got download URL from {instance}")
+                    return {
+                        "success": True,
+                        "download_url": download_url,
+                        "video_id": video_id
+                    }
+                else:
+                    last_error = "No download URL in response"
+                    
+            except httpx.TimeoutException:
+                logger.warning(f"⚠️ Timeout for {instance}")
+                last_error = "Timeout"
+            except Exception as e:
+                logger.warning(f"⚠️ Error with {instance}: {e}")
+                last_error = str(e)
+    
+    # All instances failed
+    logger.error(f"❌ All Cobalt instances failed. Last error: {last_error}")
+    raise HTTPException(
+        status_code=502,
+        detail=f"YouTube audio extraction failed: {last_error}"
+    )
+
+
+# ============================================================================
+# YOUTUBE AUDIO PROXY VIA YT-DLP (backup, may not work on VPS)
 # ============================================================================
 
 @router.post("/youtube-download")
