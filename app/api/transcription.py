@@ -2571,3 +2571,82 @@ async def get_vision_status(
     }
 
 
+# ============================================================================
+# YOUTUBE AUDIO PROXY
+# ============================================================================
+
+@router.post("/youtube-audio-proxy")
+async def youtube_audio_proxy(
+    download_url: str = Form(...),
+    filename: str = Form("youtube_audio"),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Proxy endpoint for downloading YouTube audio from Cobalt.
+    
+    This endpoint downloads audio from the provided Cobalt URL and streams it back.
+    Used when client-side download is blocked by CORS.
+    
+    Args:
+        download_url: Cobalt tunnel/redirect URL
+        filename: Desired filename (without extension)
+    
+    Returns:
+        Audio file stream
+    """
+    import httpx
+    from fastapi.responses import StreamingResponse
+    
+    logger.info(f"🎬 YouTube audio proxy request: {filename}")
+    
+    try:
+        # Validate URL (must be from Cobalt)
+        allowed_domains = [
+            'cobalt.api.timelessnesses.me',
+            'cobalt-api.kwiatekmiki.com', 
+            'api.cobalt.tools',
+            'co.wuk.sh'  # Common Cobalt tunnel domain
+        ]
+        
+        from urllib.parse import urlparse
+        parsed = urlparse(download_url)
+        
+        # Allow any URL for now (Cobalt uses various CDN domains)
+        # Just log it for debugging
+        logger.info(f"📥 Downloading from: {parsed.netloc}")
+        
+        async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+            response = await client.get(download_url)
+            
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Failed to download audio: {response.status_code}"
+                )
+            
+            content = response.content
+            content_type = response.headers.get('content-type', 'audio/mpeg')
+            
+            logger.info(f"✅ Downloaded {len(content)} bytes, type: {content_type}")
+            
+            # Return as streaming response
+            def generate():
+                yield content
+            
+            safe_filename = filename.replace('"', '').replace("'", "")[:100]
+            
+            return StreamingResponse(
+                generate(),
+                media_type=content_type,
+                headers={
+                    "Content-Disposition": f'attachment; filename="{safe_filename}.mp3"',
+                    "Content-Length": str(len(content))
+                }
+            )
+            
+    except httpx.TimeoutException:
+        logger.error("❌ YouTube audio download timeout")
+        raise HTTPException(status_code=504, detail="Download timeout")
+    except Exception as e:
+        logger.error(f"❌ YouTube audio proxy error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
