@@ -2572,8 +2572,14 @@ async def get_vision_status(
 
 
 # ============================================================================
-# YOUTUBE AUDIO PROXY
+# YOUTUBE AUDIO PROXY VIA COBALT API
 # ============================================================================
+
+# Working Cobalt instances (tested December 2024)
+COBALT_INSTANCES = [
+    "https://cobalt-api.kwiatekmiki.com/",
+    "https://cobalt-backend.canine.tools/",
+]
 
 @router.post("/youtube-download")
 async def youtube_download(
@@ -2582,11 +2588,12 @@ async def youtube_download(
     current_user: User = Depends(get_current_active_user)
 ):
     """
-    Download YouTube audio via yt-dlp.
+    Download YouTube audio via Cobalt API.
     
     This endpoint:
-    1. Uses yt-dlp to download audio from YouTube
-    2. Returns the audio file as stream
+    1. Calls Cobalt API to get download URL
+    2. Downloads audio from tunnel URL
+    3. Returns the audio file as stream
     
     Args:
         youtube_url: YouTube video URL
@@ -2595,22 +2602,97 @@ async def youtube_download(
     Returns:
         Audio file stream
     """
-    from fastapi.responses import FileResponse
-    from app.services.youtube_service import YouTubeService
+    from fastapi.responses import StreamingResponse
+    import httpx
+    import tempfile
     import os
     
-    logger.info(f"🎬 YouTube download request: {youtube_url}")
+    logger.info(f"🎬 YouTube download request via Cobalt: {youtube_url}")
+    
+    async def try_cobalt_instance(instance_url: str, video_url: str) -> dict:
+        """Try a single Cobalt instance"""
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                instance_url,
+                json={
+                    "url": video_url,
+                    "downloadMode": "audio",
+                    "audioFormat": "mp3"
+                },
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json"
+                }
+            )
+            response.raise_for_status()
+            return response.json()
+    
+    async def download_from_tunnel(tunnel_url: str) -> bytes:
+        """Download audio from Cobalt tunnel URL"""
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.get(tunnel_url)
+            response.raise_for_status()
+            return response.content
     
     try:
-        youtube_service = YouTubeService()
+        # Try each Cobalt instance
+        cobalt_response = None
+        last_error = None
         
-        # Download audio using yt-dlp
-        downloaded_file = youtube_service.download_audio(youtube_url)
+        for instance in COBALT_INSTANCES:
+            try:
+                logger.info(f"🔄 Trying Cobalt instance: {instance}")
+                cobalt_response = await try_cobalt_instance(instance, youtube_url)
+                
+                if cobalt_response.get("status") == "error":
+                    error_code = cobalt_response.get("error", {}).get("code", "unknown")
+                    if error_code == "error.api.auth.jwt.missing":
+                        logger.warning(f"⚠️ {instance} requires JWT, skipping...")
+                        continue
+                    raise ValueError(f"Cobalt error: {error_code}")
+                
+                if cobalt_response.get("status") in ["tunnel", "redirect"]:
+                    logger.info(f"✅ Got response from {instance}: {cobalt_response.get('status')}")
+                    break
+                    
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"⚠️ Failed with {instance}: {e}")
+                continue
         
-        if not downloaded_file.exists():
-            raise HTTPException(status_code=500, detail="Downloaded file not found")
+        if not cobalt_response:
+            raise HTTPException(
+                status_code=503,
+                detail=f"All Cobalt instances failed. Last error: {last_error}"
+            )
         
-        file_size = downloaded_file.stat().st_size
+        # Handle response types
+        download_url = None
+        
+        if cobalt_response.get("status") == "tunnel":
+            download_url = cobalt_response.get("url")
+        elif cobalt_response.get("status") == "redirect":
+            download_url = cobalt_response.get("url")
+        elif cobalt_response.get("status") == "stream":
+            download_url = cobalt_response.get("url")
+        else:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Unexpected Cobalt response: {cobalt_response.get('status')}"
+            )
+        
+        if not download_url:
+            raise HTTPException(
+                status_code=502,
+                detail="No download URL in Cobalt response"
+            )
+        
+        logger.info(f"📥 Downloading from: {download_url[:100]}...")
+        
+        # Download the audio file
+        audio_content = await download_from_tunnel(download_url)
+        file_size = len(audio_content)
+        
         logger.info(f"✅ Downloaded {file_size} bytes ({file_size/1024/1024:.2f} MB)")
         
         if file_size < 1000:
@@ -2619,29 +2701,34 @@ async def youtube_download(
                 detail="Downloaded file is too small. The video may be unavailable."
             )
         
-        safe_filename = filename.replace('"', '').replace("'", "").replace("/", "_")[:100]
+        # Get filename from Cobalt response or use provided one
+        cobalt_filename = cobalt_response.get("filename", "")
+        if cobalt_filename:
+            safe_filename = cobalt_filename.replace('"', '').replace("'", "").replace("/", "_")[:100]
+        else:
+            safe_filename = filename.replace('"', '').replace("'", "").replace("/", "_")[:100]
         
-        # Return file and schedule cleanup
-        response = FileResponse(
-            path=str(downloaded_file),
+        # Ensure .mp3 extension
+        if not safe_filename.endswith('.mp3'):
+            safe_filename = f"{safe_filename}.mp3"
+        
+        # Return as streaming response
+        from io import BytesIO
+        
+        return StreamingResponse(
+            BytesIO(audio_content),
             media_type="audio/mpeg",
-            filename=f"{safe_filename}.mp3",
             headers={
-                "Content-Disposition": f'attachment; filename="{safe_filename}.mp3"',
+                "Content-Disposition": f'attachment; filename="{safe_filename}"',
                 "Content-Length": str(file_size)
             }
         )
         
-        # Note: File will be cleaned up by YouTubeService.cleanup_file() 
-        # or by a scheduled cleanup task
-        
-        return response
-        
     except HTTPException:
         raise
-    except ValueError as e:
-        logger.error(f"❌ YouTube download error: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+    except httpx.TimeoutException:
+        logger.error("❌ Cobalt API timeout")
+        raise HTTPException(status_code=504, detail="Download timeout. Please try again.")
     except Exception as e:
         logger.error(f"❌ YouTube download error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to download YouTube video: {str(e)}")
