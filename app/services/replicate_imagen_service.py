@@ -8,9 +8,11 @@ FEATURES:
 - High quality output (better than FLUX in photorealism)
 
 PERFORMANCE:
-- Generation time: ~5-10 seconds per image
+- Generation time: ~30-120 seconds per image (depends on queue)
 - Cost: ~$0.02 per image (competitive with Modal)
 - Quality: Photorealistic, cinematic
+
+NOTE: Imagen-4 is slow due to cold starts. First image can take 2+ minutes.
 """
 import os
 import logging
@@ -18,8 +20,13 @@ import replicate
 from typing import List, Optional
 import io
 import requests
+import time
 
 logger = logging.getLogger(__name__)
+
+# Timeout settings
+REPLICATE_TIMEOUT = 300  # 5 minutes for image generation
+DOWNLOAD_TIMEOUT = 60    # 1 minute for downloading result
 
 
 class ReplicateImagenService:
@@ -59,6 +66,9 @@ class ReplicateImagenService:
         try:
             logger.info(f"🎨 [IMAGEN] Generating image with Replicate Imagen-4...")
             logger.info(f"📝 Prompt: {prompt[:100]}...")
+            logger.info(f"⏱️ Note: Imagen-4 can take 1-3 minutes due to cold starts")
+            
+            start_time = time.time()
             
             # Prepare input
             input_data = {
@@ -70,14 +80,52 @@ class ReplicateImagenService:
             if seed is not None:
                 input_data["seed"] = seed
             
-            # Run Imagen-4 model
-            output = replicate.run(
-                "google/imagen-4",
+            # Run Imagen-4 model with prediction API for better control
+            logger.info(f"🚀 [IMAGEN] Starting prediction...")
+            
+            # Use predictions API instead of run() for timeout control
+            prediction = replicate.predictions.create(
+                model="google/imagen-4",
                 input=input_data
             )
             
-            # Handle Replicate response (can be string URL or FileOutput object)
-            if isinstance(output, str):
+            # Wait for completion with timeout
+            max_wait = REPLICATE_TIMEOUT
+            poll_interval = 5  # Check every 5 seconds
+            elapsed = 0
+            
+            while prediction.status not in ["succeeded", "failed", "canceled"]:
+                if elapsed >= max_wait:
+                    logger.error(f"❌ [IMAGEN] Timeout after {elapsed}s")
+                    try:
+                        prediction.cancel()
+                    except:
+                        pass
+                    raise TimeoutError(f"Imagen-4 generation timed out after {max_wait} seconds")
+                
+                time.sleep(poll_interval)
+                elapsed += poll_interval
+                prediction.reload()
+                logger.info(f"⏳ [IMAGEN] Status: {prediction.status} ({elapsed}s elapsed)")
+            
+            generation_time = time.time() - start_time
+            logger.info(f"⏱️ [IMAGEN] Generation took {generation_time:.1f}s")
+            
+            if prediction.status == "failed":
+                error_msg = prediction.error or "Unknown error"
+                logger.error(f"❌ [IMAGEN] Prediction failed: {error_msg}")
+                raise RuntimeError(f"Imagen-4 failed: {error_msg}")
+            
+            if prediction.status == "canceled":
+                raise RuntimeError("Imagen-4 prediction was canceled")
+            
+            # Get output URL
+            output = prediction.output
+            
+            # Handle Replicate response (can be string URL, list, or FileOutput object)
+            if isinstance(output, list) and len(output) > 0:
+                image_url = output[0]
+            elif isinstance(output, str):
                 image_url = output
             elif hasattr(output, 'url'):
                 image_url = output.url() if callable(output.url) else output.url
@@ -86,13 +134,13 @@ class ReplicateImagenService:
                 logger.info(f"✅ [IMAGEN] Generated image: {len(output)} bytes")
                 return output
             
-            logger.info(f"📥 Downloading image from: {image_url}")
+            logger.info(f"📥 Downloading image from: {image_url[:100]}...")
             
-            response = requests.get(image_url, timeout=30)
+            response = requests.get(image_url, timeout=DOWNLOAD_TIMEOUT)
             response.raise_for_status()
             
             image_bytes = response.content
-            logger.info(f"✅ [IMAGEN] Generated image: {len(image_bytes)} bytes")
+            logger.info(f"✅ [IMAGEN] Generated image: {len(image_bytes)} bytes ({len(image_bytes)/1024:.1f} KB)")
             
             return image_bytes
             

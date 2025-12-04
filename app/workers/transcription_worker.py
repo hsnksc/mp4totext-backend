@@ -1324,7 +1324,9 @@ def process_transcription_task(self, transcription_id: int) -> Dict[str, Any]:
     name="app.workers.generate_transcript_images",
     bind=True,
     max_retries=2,
-    default_retry_delay=60
+    default_retry_delay=60,
+    time_limit=900,       # 15 dakika hard timeout (Imagen-4 yavaş)
+    soft_time_limit=840   # 14 dakika soft timeout
 )
 def generate_transcript_images(
     self,
