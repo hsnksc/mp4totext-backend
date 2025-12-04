@@ -2572,14 +2572,8 @@ async def get_vision_status(
 
 
 # ============================================================================
-# YOUTUBE AUDIO PROXY VIA COBALT API
+# YOUTUBE AUDIO PROXY VIA RAPIDAPI
 # ============================================================================
-
-# Working Cobalt instances (tested December 2024)
-COBALT_INSTANCES = [
-    "https://cobalt-api.kwiatekmiki.com/",
-    "https://cobalt-backend.canine.tools/",
-]
 
 @router.post("/youtube-download")
 async def youtube_download(
@@ -2588,146 +2582,131 @@ async def youtube_download(
     current_user: User = Depends(get_current_active_user)
 ):
     """
-    Download YouTube audio via Cobalt API.
+    Download YouTube audio via RapidAPI YouTube MP3 service.
     
     This endpoint:
-    1. Calls Cobalt API to get download URL
-    2. Downloads audio from tunnel URL
-    3. Returns the audio file as stream
+    1. Extracts video ID from YouTube URL
+    2. Calls RapidAPI to convert video to MP3
+    3. Downloads MP3 and returns as stream
     
     Args:
         youtube_url: YouTube video URL
         filename: Desired filename (without extension)
     
     Returns:
-        Audio file stream
+        Audio file stream (MP3)
     """
     from fastapi.responses import StreamingResponse
     import httpx
-    import tempfile
+    import re
     import os
     
-    logger.info(f"🎬 YouTube download request via Cobalt: {youtube_url}")
+    # Get RapidAPI key from environment
+    RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
+    if not RAPIDAPI_KEY:
+        logger.error("❌ RAPIDAPI_KEY not configured")
+        raise HTTPException(
+            status_code=503,
+            detail="YouTube download service not configured. Contact administrator."
+        )
     
-    async def try_cobalt_instance(instance_url: str, video_url: str) -> dict:
-        """Try a single Cobalt instance"""
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                instance_url,
-                json={
-                    "url": video_url,
-                    "downloadMode": "audio",
-                    "audioFormat": "mp3"
-                },
+    logger.info(f"🎬 YouTube download request via RapidAPI: {youtube_url}")
+    
+    # Extract video ID from URL
+    video_id = None
+    patterns = [
+        r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/)([^&\n?#]+)',
+        r'^([a-zA-Z0-9_-]{11})$'
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, youtube_url)
+        if match:
+            video_id = match.group(1)
+            break
+    
+    if not video_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid YouTube URL. Could not extract video ID."
+        )
+    
+    logger.info(f"📺 Video ID: {video_id}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            # Step 1: Call RapidAPI to get MP3 link
+            logger.info("🔄 Calling RapidAPI YouTube MP3...")
+            
+            response = await client.get(
+                f"https://youtube-mp36.p.rapidapi.com/dl?id={video_id}",
                 headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/json"
+                    "x-rapidapi-key": RAPIDAPI_KEY,
+                    "x-rapidapi-host": "youtube-mp36.p.rapidapi.com"
                 }
             )
             response.raise_for_status()
-            return response.json()
-    
-    async def download_from_tunnel(tunnel_url: str) -> bytes:
-        """Download audio from Cobalt tunnel URL"""
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            response = await client.get(tunnel_url)
-            response.raise_for_status()
-            return response.content
-    
-    try:
-        # Try each Cobalt instance
-        cobalt_response = None
-        last_error = None
-        
-        for instance in COBALT_INSTANCES:
-            try:
-                logger.info(f"🔄 Trying Cobalt instance: {instance}")
-                cobalt_response = await try_cobalt_instance(instance, youtube_url)
-                
-                if cobalt_response.get("status") == "error":
-                    error_code = cobalt_response.get("error", {}).get("code", "unknown")
-                    if error_code == "error.api.auth.jwt.missing":
-                        logger.warning(f"⚠️ {instance} requires JWT, skipping...")
-                        continue
-                    raise ValueError(f"Cobalt error: {error_code}")
-                
-                if cobalt_response.get("status") in ["tunnel", "redirect"]:
-                    logger.info(f"✅ Got response from {instance}: {cobalt_response.get('status')}")
-                    break
-                    
-            except Exception as e:
-                last_error = str(e)
-                logger.warning(f"⚠️ Failed with {instance}: {e}")
-                continue
-        
-        if not cobalt_response:
-            raise HTTPException(
-                status_code=503,
-                detail=f"All Cobalt instances failed. Last error: {last_error}"
-            )
-        
-        # Handle response types
-        download_url = None
-        
-        if cobalt_response.get("status") == "tunnel":
-            download_url = cobalt_response.get("url")
-        elif cobalt_response.get("status") == "redirect":
-            download_url = cobalt_response.get("url")
-        elif cobalt_response.get("status") == "stream":
-            download_url = cobalt_response.get("url")
-        else:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Unexpected Cobalt response: {cobalt_response.get('status')}"
-            )
-        
-        if not download_url:
-            raise HTTPException(
-                status_code=502,
-                detail="No download URL in Cobalt response"
-            )
-        
-        logger.info(f"📥 Downloading from: {download_url[:100]}...")
-        
-        # Download the audio file
-        audio_content = await download_from_tunnel(download_url)
-        file_size = len(audio_content)
-        
-        logger.info(f"✅ Downloaded {file_size} bytes ({file_size/1024/1024:.2f} MB)")
-        
-        if file_size < 1000:
-            raise HTTPException(
-                status_code=502,
-                detail="Downloaded file is too small. The video may be unavailable."
-            )
-        
-        # Get filename from Cobalt response or use provided one
-        cobalt_filename = cobalt_response.get("filename", "")
-        if cobalt_filename:
-            safe_filename = cobalt_filename.replace('"', '').replace("'", "").replace("/", "_")[:100]
-        else:
-            safe_filename = filename.replace('"', '').replace("'", "").replace("/", "_")[:100]
-        
-        # Ensure .mp3 extension
-        if not safe_filename.endswith('.mp3'):
+            
+            data = response.json()
+            logger.info(f"📥 RapidAPI response: status={data.get('status')}, title={data.get('title', '')[:50]}")
+            
+            if data.get("status") != "ok":
+                error_msg = data.get("msg", "Conversion failed")
+                logger.error(f"❌ RapidAPI error: {error_msg}")
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"YouTube conversion failed: {error_msg}"
+                )
+            
+            download_url = data.get("link")
+            if not download_url:
+                raise HTTPException(
+                    status_code=502,
+                    detail="No download link received from RapidAPI"
+                )
+            
+            video_title = data.get("title", filename)
+            
+            # Step 2: Download the MP3 file
+            logger.info(f"📥 Downloading MP3: {download_url[:80]}...")
+            
+            mp3_response = await client.get(download_url, timeout=300.0)
+            mp3_response.raise_for_status()
+            
+            audio_content = mp3_response.content
+            file_size = len(audio_content)
+            
+            logger.info(f"✅ Downloaded {file_size} bytes ({file_size/1024/1024:.2f} MB)")
+            
+            if file_size < 10000:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Downloaded file is too small. The video may be restricted."
+                )
+            
+            # Create safe filename
+            safe_filename = re.sub(r'[^a-zA-Z0-9\s\-_]', '', video_title)[:100]
+            if not safe_filename:
+                safe_filename = filename
             safe_filename = f"{safe_filename}.mp3"
-        
-        # Return as streaming response
-        from io import BytesIO
-        
-        return StreamingResponse(
-            BytesIO(audio_content),
-            media_type="audio/mpeg",
-            headers={
-                "Content-Disposition": f'attachment; filename="{safe_filename}"',
-                "Content-Length": str(file_size)
-            }
-        )
-        
+            
+            # Return as streaming response
+            from io import BytesIO
+            
+            return StreamingResponse(
+                BytesIO(audio_content),
+                media_type="audio/mpeg",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{safe_filename}"',
+                    "Content-Length": str(file_size),
+                    "X-Video-Title": video_title[:100]
+                }
+            )
+            
     except HTTPException:
         raise
     except httpx.TimeoutException:
-        logger.error("❌ Cobalt API timeout")
+        logger.error("❌ RapidAPI/Download timeout")
         raise HTTPException(status_code=504, detail="Download timeout. Please try again.")
     except Exception as e:
         logger.error(f"❌ YouTube download error: {e}", exc_info=True)
