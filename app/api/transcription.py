@@ -2601,13 +2601,17 @@ async def youtube_download(
     import re
     import os
     
+    logger.info(f"🎬 YouTube download endpoint called: url={youtube_url}, filename={filename}")
+    
     # Get RapidAPI key from environment
     RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
+    logger.info(f"🔑 RAPIDAPI_KEY exists: {bool(RAPIDAPI_KEY)}, length: {len(RAPIDAPI_KEY) if RAPIDAPI_KEY else 0}")
+    
     if not RAPIDAPI_KEY:
-        logger.error("❌ RAPIDAPI_KEY not configured")
+        logger.error("❌ RAPIDAPI_KEY not configured in environment variables")
         raise HTTPException(
             status_code=503,
-            detail="YouTube download service not configured. Contact administrator."
+            detail="YouTube download service not configured. RAPIDAPI_KEY environment variable is missing."
         )
     
     logger.info(f"🎬 YouTube download request via RapidAPI: {youtube_url}")
