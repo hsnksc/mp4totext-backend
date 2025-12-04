@@ -1376,26 +1376,41 @@ def generate_transcript_images(
                 "message": "Transcription not found"
             }
         
-        # Check if audio transcription is completed OR document analysis is completed
-        audio_completed = transcription.status == "completed" and transcription.text
-        document_completed = transcription.has_document and transcription.vision_status == "completed"
+        # Debug logging
+        logger.info(f"📊 Transcription found: {transcription.filename}")
+        logger.info(f"   status={transcription.status}")
+        logger.info(f"   has_text={bool(transcription.text)}, text_len={len(transcription.text) if transcription.text else 0}")
+        logger.info(f"   has_document={transcription.has_document}, vision_status={transcription.vision_status}")
         
-        if not audio_completed and not document_completed:
-            logger.error(f"❌ Transcription {transcription_id} has no completed content")
+        # Check if audio transcription is completed OR document analysis is completed
+        # More lenient check - just need text content
+        has_audio_text = bool(transcription.text and len(transcription.text.strip()) > 10)
+        has_document_text = bool(transcription.document_text or transcription.document_summary)
+        
+        audio_completed = transcription.status == "completed" and has_audio_text
+        document_completed = transcription.has_document and transcription.vision_status == "completed" and has_document_text
+        
+        logger.info(f"   audio_completed={audio_completed}, document_completed={document_completed}")
+        
+        # Also allow if we have any text content regardless of status
+        has_any_content = has_audio_text or has_document_text
+        
+        if not has_any_content:
+            logger.error(f"❌ Transcription {transcription_id} has no text content")
             return {
                 "status": "error",
-                "message": "Either audio transcription or document analysis must be completed"
+                "message": "No text content available for image generation"
             }
         
         # Get content for image generation - prefer document_summary, then text
         content_for_image = None
-        if document_completed and transcription.document_summary:
+        if has_document_text and transcription.document_summary:
             content_for_image = transcription.document_summary
             logger.info("📄 Using document_summary for image generation")
-        elif document_completed and transcription.document_text:
+        elif has_document_text and transcription.document_text:
             content_for_image = transcription.document_text[:2000]  # Limit for prompt
             logger.info("📄 Using document_text for image generation")
-        elif audio_completed and transcription.text:
+        elif has_audio_text and transcription.text:
             content_for_image = transcription.text
             logger.info("🎵 Using audio transcription text for image generation")
         
