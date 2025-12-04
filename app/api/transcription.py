@@ -2614,51 +2614,72 @@ async def cobalt_proxy(
             detail="Invalid YouTube URL"
         )
     
-    # Cobalt API instances to try
-    cobalt_instances = [
-        "https://api.cobalt.tools",
-        "https://co.wuk.sh",
-        "https://cobalt-api.hyper.lol",
+    # Cobalt API instances to try (v7 API format)
+    # Primary: api.cobalt.tools with proper headers
+    cobalt_configs = [
+        {
+            "url": "https://api.cobalt.tools",
+            "headers": {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            }
+        },
     ]
     
     last_error = None
     
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        for instance in cobalt_instances:
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        for config in cobalt_configs:
+            instance = config["url"]
             try:
                 logger.info(f"🔄 Trying Cobalt instance: {instance}")
                 
+                # Cobalt v7 API format
+                payload = {
+                    "url": youtube_url,
+                    "downloadMode": "audio",
+                    "audioFormat": "mp3",
+                }
+                
                 response = await client.post(
-                    f"{instance}/api/json",
-                    json={
-                        "url": youtube_url,
-                        "aFormat": "mp3",
-                        "isAudioOnly": True,
-                        "filenamePattern": "basic",
-                    },
-                    headers={
-                        "Accept": "application/json",
-                        "Content-Type": "application/json",
-                    }
+                    instance,
+                    json=payload,
+                    headers=config["headers"]
                 )
                 
+                logger.info(f"📥 Cobalt response status: {response.status_code}")
+                
                 if response.status_code != 200:
-                    logger.warning(f"⚠️ Cobalt {instance} returned {response.status_code}")
+                    # Try to get error message
+                    try:
+                        error_data = response.json()
+                        last_error = error_data.get("error", {}).get("code", f"HTTP {response.status_code}")
+                        logger.warning(f"⚠️ Cobalt {instance} returned {response.status_code}: {error_data}")
+                    except:
+                        last_error = f"HTTP {response.status_code}"
+                        logger.warning(f"⚠️ Cobalt {instance} returned {response.status_code}")
                     continue
                 
                 data = response.json()
                 logger.info(f"📥 Cobalt response: {data}")
                 
-                if data.get("status") == "error":
-                    last_error = data.get("text", "Cobalt API error")
+                # Handle different response statuses
+                status = data.get("status")
+                
+                if status == "error":
+                    error_info = data.get("error", {})
+                    last_error = error_info.get("code", "Unknown error")
+                    logger.warning(f"⚠️ Cobalt error: {last_error}")
                     continue
                 
                 # Get download URL based on response type
                 download_url = None
                 
-                if data.get("status") in ["redirect", "stream"]:
+                if status == "tunnel" or status == "redirect":
                     download_url = data.get("url")
-                elif data.get("status") == "picker" and data.get("picker"):
+                elif status == "stream":
+                    download_url = data.get("url")
+                elif status == "picker" and data.get("picker"):
                     # Find audio option in picker
                     picker = data.get("picker", [])
                     for item in picker:
@@ -2676,7 +2697,8 @@ async def cobalt_proxy(
                         "video_id": video_id
                     }
                 else:
-                    last_error = "No download URL in response"
+                    last_error = f"No download URL in response. Status: {status}"
+                    logger.warning(f"⚠️ {last_error}")
                     
             except httpx.TimeoutException:
                 logger.warning(f"⚠️ Timeout for {instance}")
