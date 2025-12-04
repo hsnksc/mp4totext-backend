@@ -2581,19 +2581,16 @@ async def cobalt_proxy(
     current_user: User = Depends(get_current_active_user)
 ):
     """
-    Proxy endpoint for Cobalt API to bypass CORS.
+    Proxy endpoint for YouTube audio extraction.
     
-    This endpoint:
-    1. Calls Cobalt API from backend (no CORS issues)
-    2. Returns the direct download URL to frontend
-    3. Frontend downloads the audio directly from Cobalt's CDN
-    
-    The actual download happens in the user's browser, not on our server.
+    Uses multiple services as fallback:
+    1. Invidious API (open-source YouTube frontend)
+    2. Piped API (privacy-focused YouTube frontend)
     """
     import httpx
     import re
     
-    logger.info(f"🎵 Cobalt proxy called for: {youtube_url}")
+    logger.info(f"🎵 YouTube audio proxy called for: {youtube_url}")
     
     # Validate YouTube URL
     video_id = None
@@ -2614,104 +2611,123 @@ async def cobalt_proxy(
             detail="Invalid YouTube URL"
         )
     
-    # Cobalt API instances to try (v7 API format)
-    # Primary: api.cobalt.tools with proper headers
-    cobalt_configs = [
-        {
-            "url": "https://api.cobalt.tools",
-            "headers": {
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            }
-        },
-    ]
-    
     last_error = None
     
+    # Invidious instances (open-source YouTube frontend)
+    invidious_instances = [
+        "https://inv.nadeko.net",
+        "https://invidious.nerdvpn.de",
+        "https://invidious.jing.rocks",
+        "https://vid.puffyan.us",
+        "https://invidious.snopyta.org",
+    ]
+    
+    # Piped instances (privacy-focused YouTube frontend)
+    piped_instances = [
+        "https://pipedapi.kavin.rocks",
+        "https://api.piped.yt",
+        "https://pipedapi.in.projectsegfau.lt",
+    ]
+    
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        for config in cobalt_configs:
-            instance = config["url"]
+        
+        # Method 1: Try Invidious API
+        for instance in invidious_instances:
             try:
-                logger.info(f"🔄 Trying Cobalt instance: {instance}")
+                logger.info(f"🔄 Trying Invidious: {instance}")
                 
-                # Cobalt v7 API format
-                payload = {
-                    "url": youtube_url,
-                    "downloadMode": "audio",
-                    "audioFormat": "mp3",
-                }
-                
-                response = await client.post(
-                    instance,
-                    json=payload,
-                    headers=config["headers"]
+                # Get video info with audio formats
+                response = await client.get(
+                    f"{instance}/api/v1/videos/{video_id}",
+                    headers={"Accept": "application/json"}
                 )
                 
-                logger.info(f"📥 Cobalt response status: {response.status_code}")
-                
-                if response.status_code != 200:
-                    # Try to get error message
-                    try:
-                        error_data = response.json()
-                        last_error = error_data.get("error", {}).get("code", f"HTTP {response.status_code}")
-                        logger.warning(f"⚠️ Cobalt {instance} returned {response.status_code}: {error_data}")
-                    except:
-                        last_error = f"HTTP {response.status_code}"
-                        logger.warning(f"⚠️ Cobalt {instance} returned {response.status_code}")
-                    continue
-                
-                data = response.json()
-                logger.info(f"📥 Cobalt response: {data}")
-                
-                # Handle different response statuses
-                status = data.get("status")
-                
-                if status == "error":
-                    error_info = data.get("error", {})
-                    last_error = error_info.get("code", "Unknown error")
-                    logger.warning(f"⚠️ Cobalt error: {last_error}")
-                    continue
-                
-                # Get download URL based on response type
-                download_url = None
-                
-                if status == "tunnel" or status == "redirect":
-                    download_url = data.get("url")
-                elif status == "stream":
-                    download_url = data.get("url")
-                elif status == "picker" and data.get("picker"):
-                    # Find audio option in picker
-                    picker = data.get("picker", [])
-                    for item in picker:
-                        if item.get("type") == "audio":
-                            download_url = item.get("url")
-                            break
-                    if not download_url and picker:
-                        download_url = picker[0].get("url")
-                
-                if download_url:
-                    logger.info(f"✅ Got download URL from {instance}")
-                    return {
-                        "success": True,
-                        "download_url": download_url,
-                        "video_id": video_id
-                    }
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    # Find best audio format
+                    adaptive_formats = data.get("adaptiveFormats", [])
+                    audio_formats = [f for f in adaptive_formats if f.get("type", "").startswith("audio/")]
+                    
+                    if audio_formats:
+                        # Sort by bitrate, get highest quality
+                        audio_formats.sort(key=lambda x: x.get("bitrate", 0), reverse=True)
+                        best_audio = audio_formats[0]
+                        
+                        download_url = best_audio.get("url")
+                        if download_url:
+                            logger.info(f"✅ Got audio URL from Invidious: {instance}")
+                            return {
+                                "success": True,
+                                "download_url": download_url,
+                                "video_id": video_id,
+                                "title": data.get("title", "YouTube Audio"),
+                                "duration": data.get("lengthSeconds", 0),
+                                "author": data.get("author", "Unknown"),
+                                "content_type": best_audio.get("type", "audio/mp4"),
+                            }
+                    
+                    last_error = "No audio formats found"
                 else:
-                    last_error = f"No download URL in response. Status: {status}"
-                    logger.warning(f"⚠️ {last_error}")
+                    last_error = f"HTTP {response.status_code}"
                     
             except httpx.TimeoutException:
                 logger.warning(f"⚠️ Timeout for {instance}")
                 last_error = "Timeout"
             except Exception as e:
-                logger.warning(f"⚠️ Error with {instance}: {e}")
+                logger.warning(f"⚠️ Invidious {instance} failed: {e}")
+                last_error = str(e)
+        
+        # Method 2: Try Piped API
+        for instance in piped_instances:
+            try:
+                logger.info(f"🔄 Trying Piped: {instance}")
+                
+                response = await client.get(
+                    f"{instance}/streams/{video_id}",
+                    headers={"Accept": "application/json"}
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    # Get audio streams
+                    audio_streams = data.get("audioStreams", [])
+                    
+                    if audio_streams:
+                        # Sort by bitrate
+                        audio_streams.sort(key=lambda x: x.get("bitrate", 0), reverse=True)
+                        best_audio = audio_streams[0]
+                        
+                        download_url = best_audio.get("url")
+                        if download_url:
+                            logger.info(f"✅ Got audio URL from Piped: {instance}")
+                            return {
+                                "success": True,
+                                "download_url": download_url,
+                                "video_id": video_id,
+                                "title": data.get("title", "YouTube Audio"),
+                                "duration": data.get("duration", 0),
+                                "author": data.get("uploader", "Unknown"),
+                                "content_type": best_audio.get("mimeType", "audio/mp4"),
+                            }
+                    
+                    last_error = "No audio streams found"
+                else:
+                    last_error = f"HTTP {response.status_code}"
+                    
+            except httpx.TimeoutException:
+                logger.warning(f"⚠️ Timeout for {instance}")
+                last_error = "Timeout"
+            except Exception as e:
+                logger.warning(f"⚠️ Piped {instance} failed: {e}")
                 last_error = str(e)
     
-    # All instances failed
-    logger.error(f"❌ All Cobalt instances failed. Last error: {last_error}")
+    # All methods failed
+    logger.error(f"❌ All YouTube extraction methods failed. Last error: {last_error}")
     raise HTTPException(
         status_code=502,
-        detail=f"YouTube audio extraction failed: {last_error}"
+        detail=f"YouTube audio extraction failed: {last_error}. Please try uploading the audio file directly."
     )
 
 
