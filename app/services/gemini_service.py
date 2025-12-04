@@ -963,10 +963,37 @@ Begin:"""
             # Check if model requires specific temperature settings
             temperature = 1.0 if "gpt-5" in self.model_name.lower() else 0.3
             
+            # Detect if this is a Mix Up / article generation request (not transcription enhancement)
+            is_article_generation = "content creator" in prompt.lower() or "synthesize" in prompt.lower() or "article" in prompt.lower()
+            
+            if is_article_generation:
+                # For article generation, don't use JSON format - return plain text
+                logger.info("📝 Detected article generation request - using plain text mode")
+                response = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "content": "You are an expert content creator. Write comprehensive, well-structured articles in Markdown format."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.7,
+                    max_tokens=8192
+                )
+                
+                response_text = response.choices[0].message.content
+                logger.info(f"✅ Groq article generation completed: {len(response_text)} chars")
+                
+                return {
+                    "enhanced_text": response_text,
+                    "summary": "",
+                    "improvements": [],
+                    "word_count": len(response_text.split())
+                }
+            
+            # Standard transcription enhancement with JSON format
             response = self.client.chat.completions.create(
                 model=self.model_name,
                 messages=[
-                    {"role": "system", "content": "You are a professional transcription editor. Return only valid JSON."},
+                    {"role": "system", "content": "You are a professional transcription editor. Return only valid JSON with 'enhanced_text', 'summary', and 'improvements' fields."},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=temperature,
@@ -979,6 +1006,19 @@ Begin:"""
             # Parse JSON response
             import json
             result = json.loads(response_text)
+            
+            # Ensure enhanced_text exists
+            if "enhanced_text" not in result or not result["enhanced_text"]:
+                logger.warning("⚠️ Groq response missing enhanced_text, using fallback")
+                # Try to extract text from other fields or use response as-is
+                if "text" in result:
+                    result["enhanced_text"] = result["text"]
+                elif "content" in result:
+                    result["enhanced_text"] = result["content"]
+                else:
+                    # Use original text as fallback
+                    result["enhanced_text"] = original_text
+                    logger.warning(f"⚠️ Using original text as fallback. Response keys: {list(result.keys())}")
             
             logger.info(f"✅ Groq enhancement completed:")
             logger.info(f"   Original: {len(original_text)} chars")
