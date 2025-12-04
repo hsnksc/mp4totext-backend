@@ -24,6 +24,7 @@ import base64
 import logging
 import json
 import time
+import asyncio
 import tempfile
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
@@ -41,6 +42,11 @@ settings = get_settings()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or settings.GEMINI_API_KEY
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
+
+# Rate limit settings
+RATE_LIMIT_DELAY = 6  # Seconds between requests (10 requests/min = 6s between)
+MAX_RETRIES = 3  # Max retries for rate limit errors
+RETRY_DELAY = 35  # Seconds to wait on rate limit (API suggests ~32s)
 
 
 # ============================================================================
@@ -257,6 +263,53 @@ class VisionService:
         
         return pages
     
+    async def _call_gemini_with_retry(
+        self,
+        content: list,
+        generation_config: genai.GenerationConfig,
+        max_retries: int = MAX_RETRIES
+    ) -> str:
+        """
+        Call Gemini API with automatic retry on rate limit errors
+        
+        Args:
+            content: Content to send to Gemini
+            generation_config: Generation config
+            max_retries: Maximum retry attempts
+        
+        Returns:
+            Response text from Gemini
+        """
+        for attempt in range(max_retries + 1):
+            try:
+                response = self.model.generate_content(
+                    content,
+                    generation_config=generation_config
+                )
+                return response.text.strip()
+                
+            except Exception as e:
+                error_str = str(e)
+                
+                # Check for rate limit error (429)
+                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                    if attempt < max_retries:
+                        # Extract retry delay from error if available
+                        retry_match = re.search(r'seconds:\s*(\d+)', error_str)
+                        wait_time = int(retry_match.group(1)) + 3 if retry_match else RETRY_DELAY
+                        
+                        logger.warning(f"⚠️ Rate limit hit, waiting {wait_time}s before retry {attempt + 1}/{max_retries}")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    else:
+                        logger.error(f"❌ Rate limit exceeded after {max_retries} retries")
+                        raise
+                else:
+                    # Not a rate limit error, don't retry
+                    raise
+        
+        raise Exception("Max retries exceeded")
+    
     async def analyze_image(
         self, 
         image_data: bytes, 
@@ -297,17 +350,14 @@ class VisionService:
                         f'"total_pages": {page_info.get("total_pages", 1)}'
                     )
                 
-                # Generate response
-                response = self.model.generate_content(
+                # Generate response with retry on rate limit
+                response_text = await self._call_gemini_with_retry(
                     [prompt, image_part],
-                    generation_config=genai.GenerationConfig(
+                    genai.GenerationConfig(
                         temperature=0.1,  # Low temperature for accurate extraction
                         max_output_tokens=8192
                     )
                 )
-                
-                # Parse response
-                response_text = response.text.strip()
                 
                 # Clean up JSON if wrapped in markdown
                 if response_text.startswith("```json"):
@@ -397,7 +447,12 @@ class VisionService:
                 all_topics = []  # Collect topics from all pages
                 page_analyses = []
                 
-                for page in pages:
+                for i, page in enumerate(pages):
+                    # Add delay between pages to avoid rate limits (except first page)
+                    if i > 0:
+                        logger.debug(f"⏳ Rate limit delay: {RATE_LIMIT_DELAY}s before page {page['page_number']}")
+                        await asyncio.sleep(RATE_LIMIT_DELAY)
+                    
                     page_result = await self.analyze_image(
                         page["image_data"],
                         "image/png",
@@ -466,12 +521,15 @@ class VisionService:
 
 Provide a concise, informative summary that captures the main points."""
             
-            response = self.model.generate_content(
+            generation_config = genai.GenerationConfig(
+                temperature=0.3,
+                max_output_tokens=1024
+            )
+            
+            response = await self._call_gemini_with_retry(
                 prompt,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.3,
-                    max_output_tokens=1024
-                )
+                generation_config,
+                max_retries=MAX_RETRIES
             )
             
             return response.text.strip()
@@ -512,13 +570,16 @@ Provide a concise, informative summary that captures the main points."""
             if custom_instructions:
                 prompt += f"\n\nAdditional Instructions: {custom_instructions}"
             
-            # Generate combined analysis
-            response = self.model.generate_content(
+            # Generate combined analysis with retry mechanism
+            generation_config = genai.GenerationConfig(
+                temperature=0.3,
+                max_output_tokens=8192
+            )
+            
+            response = await self._call_gemini_with_retry(
                 prompt,
-                generation_config=genai.GenerationConfig(
-                    temperature=0.3,
-                    max_output_tokens=8192
-                )
+                generation_config,
+                max_retries=MAX_RETRIES
             )
             
             response_text = response.text.strip()
@@ -535,14 +596,40 @@ Provide a concise, informative summary that captures the main points."""
             response_text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', response_text.strip())
             response_text = response_text.replace('\r\n', '\\n').replace('\r', '\\n')
             
+            # More aggressive JSON extraction
             try:
                 result = json.loads(response_text)
-            except json.JSONDecodeError:
-                json_match = re.search(r'\{[\s\S]*\}', response_text)
+            except json.JSONDecodeError as first_error:
+                logger.warning(f"⚠️ First JSON parse failed: {first_error}")
+                
+                # Try to find JSON object in response
+                json_match = re.search(r'\{[\s\S]*\}', response_text, re.DOTALL)
                 if json_match:
-                    result = json.loads(json_match.group())
+                    try:
+                        result = json.loads(json_match.group())
+                    except json.JSONDecodeError as second_error:
+                        logger.warning(f"⚠️ Second JSON parse failed: {second_error}")
+                        # Return structured response with raw text
+                        result = {
+                            "combined_summary": response_text[:2000],
+                            "correlation_analysis": "Analysis available in combined_summary",
+                            "content_overlap": [],
+                            "unique_audio_points": [],
+                            "unique_document_points": [],
+                            "recommendations": [],
+                            "parse_error": str(first_error)
+                        }
                 else:
-                    raise
+                    # No JSON found, create structured response
+                    result = {
+                        "combined_summary": response_text[:2000],
+                        "correlation_analysis": "Analysis available in combined_summary",
+                        "content_overlap": [],
+                        "unique_audio_points": [],
+                        "unique_document_points": [],
+                        "recommendations": [],
+                        "parse_error": "No JSON structure found in response"
+                    }
             
             result["processing_time"] = time.time() - start_time
             result["provider"] = self.provider
