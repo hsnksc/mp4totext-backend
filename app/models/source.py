@@ -3,7 +3,7 @@ Source Model - User-created content from Mix Up feature
 """
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, Text, Float, Boolean, DateTime, ForeignKey, JSON
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, deferred
 from app.database import Base
 
 
@@ -56,16 +56,17 @@ class Source(Base):
     # Linked transcription (optional)
     transcription_id = Column(Integer, ForeignKey("transcriptions.id"), nullable=True)
     
-    # PKB (Personal Knowledge Base) fields
-    pkb_enabled = Column(Boolean, default=False)
-    pkb_status = Column(String(50), default="not_created")  # not_created, processing, ready, error
-    pkb_collection_name = Column(String(255), nullable=True)  # Qdrant collection name
-    pkb_chunk_count = Column(Integer, default=0)
+    # PKB (Personal Knowledge Base) fields - all nullable for backward compatibility
+    # These columns may not exist in older databases until migration runs
+    pkb_enabled = Column(Boolean, default=False, nullable=True)
+    pkb_status = Column(String(50), default="not_created", nullable=True)
+    pkb_collection_name = Column(String(255), nullable=True)
+    pkb_chunk_count = Column(Integer, default=0, nullable=True)
     pkb_embedding_model = Column(String(100), nullable=True)
     pkb_chunk_size = Column(Integer, nullable=True)
     pkb_chunk_overlap = Column(Integer, nullable=True)
     pkb_created_at = Column(DateTime, nullable=True)
-    pkb_credits_used = Column(Float, default=0.0)
+    pkb_credits_used = Column(Float, default=0.0, nullable=True)
     pkb_error_message = Column(Text, nullable=True)
     
     # Timestamps
@@ -77,9 +78,9 @@ class Source(Base):
     user = relationship("User", back_populates="sources")
     transcription = relationship("Transcription", back_populates="sources")
     
-    # PKB Relationships
-    pkb_chunks = relationship("PKBChunk", back_populates="source", cascade="all, delete-orphan")
-    pkb_chat_sessions = relationship("PKBChatSession", back_populates="source", cascade="all, delete-orphan")
+    # PKB Relationships - lazy='dynamic' to avoid loading issues
+    pkb_chunks = relationship("PKBChunk", back_populates="source", cascade="all, delete-orphan", lazy='dynamic')
+    pkb_chat_sessions = relationship("PKBChatSession", back_populates="source", cascade="all, delete-orphan", lazy='dynamic')
 
     def __repr__(self):
         return f"<Source(id={self.id}, title='{self.title[:50]}...', user_id={self.user_id})>"

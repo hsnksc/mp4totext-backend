@@ -184,18 +184,25 @@ async def get_user_sources(
     """
     Get all Sources for the current user
     """
-    query = db.query(Source).filter(Source.user_id == current_user.id)
-    
-    if status:
-        query = query.filter(Source.status == status)
-    
-    sources = query.order_by(Source.created_at.desc()).offset(skip).limit(limit).all()
-    
-    # Refresh presigned URLs for image items
-    refreshed_sources = [refresh_source_image_urls(source) for source in sources]
-    
-    logger.info(f"📋 User {current_user.username} fetched {len(sources)} sources")
-    return refreshed_sources
+    try:
+        query = db.query(Source).filter(Source.user_id == current_user.id)
+        
+        if status:
+            query = query.filter(Source.status == status)
+        
+        sources = query.order_by(Source.created_at.desc()).offset(skip).limit(limit).all()
+        
+        # Refresh presigned URLs for image items
+        refreshed_sources = [refresh_source_image_urls(source) for source in sources]
+        
+        logger.info(f"📋 User {current_user.username} fetched {len(sources)} sources")
+        return refreshed_sources
+    except Exception as e:
+        logger.error(f"❌ Error fetching sources: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch sources: {str(e)}"
+        )
 
 
 @router.get("/{source_id}", response_model=SourceResponse)
