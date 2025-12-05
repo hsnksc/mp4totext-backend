@@ -749,57 +749,50 @@ async def get_pkb_status(
     """
     from sqlalchemy import text
     
-    # First check if PKB columns exist by trying to query them
+    # First verify source exists
+    check_sql = text("SELECT id FROM sources WHERE id = :source_id AND user_id = :user_id")
+    check_result = db.execute(check_sql, {"source_id": source_id, "user_id": current_user.id})
+    if not check_result.fetchone():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source not found"
+        )
+    
+    # Try to get PKB status (columns may not exist)
     try:
         sql = text("""
-            SELECT id, pkb_enabled, pkb_status, pkb_chunk_count, 
+            SELECT pkb_enabled, pkb_status, pkb_chunk_count, 
                    pkb_embedding_model, pkb_credits_used, pkb_error_message, pkb_created_at
             FROM sources
-            WHERE id = :source_id AND user_id = :user_id
+            WHERE id = :source_id
         """)
-        result = db.execute(sql, {"source_id": source_id, "user_id": current_user.id})
+        result = db.execute(sql, {"source_id": source_id})
         row = result.fetchone()
         
-        if not row:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Source not found"
-            )
-        
-        return {
-            "pkb_enabled": row[1] or False,
-            "pkb_status": row[2] or "not_created",
-            "chunk_count": row[3] or 0,
-            "embedding_model": row[4],
-            "credits_used": row[5] or 0.0,
-            "error_message": row[6],
-            "created_at": row[7].isoformat() if row[7] else None
-        }
+        if row:
+            return {
+                "pkb_enabled": bool(row[0]) if row[0] is not None else False,
+                "pkb_status": row[1] or "not_created",
+                "chunk_count": row[2] or 0,
+                "embedding_model": row[3],
+                "credits_used": float(row[4]) if row[4] else 0.0,
+                "error_message": row[5],
+                "created_at": row[6].isoformat() if row[6] else None
+            }
     except Exception as e:
-        # PKB columns might not exist yet
-        logger.warning(f"⚠️ PKB status query failed (columns may not exist): {e}")
-        
-        # Fallback: check if source exists at least
-        sql = text("SELECT id FROM sources WHERE id = :source_id AND user_id = :user_id")
-        result = db.execute(sql, {"source_id": source_id, "user_id": current_user.id})
-        row = result.fetchone()
-        
-        if not row:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Source not found"
-            )
-        
-        # Return default PKB status (not created)
-        return {
-            "pkb_enabled": False,
-            "pkb_status": "not_created",
-            "chunk_count": 0,
-            "embedding_model": None,
-            "credits_used": 0.0,
-            "error_message": "PKB feature requires database migration. Please contact support.",
-            "created_at": None
-        }
+        # PKB columns don't exist yet - this is expected before migration
+        logger.info(f"ℹ️ PKB columns not available yet: {e}")
+    
+    # Return default PKB status (not created / migration pending)
+    return {
+        "pkb_enabled": False,
+        "pkb_status": "not_created",
+        "chunk_count": 0,
+        "embedding_model": None,
+        "credits_used": 0.0,
+        "error_message": None,
+        "created_at": None
+    }
 
 
 @router.post("/{source_id}/pkb/create")
