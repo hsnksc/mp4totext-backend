@@ -35,7 +35,16 @@ def _ensure_openai():
         AsyncOpenAI = _AsyncOpenAI
     return OpenAI, AsyncOpenAI
 
-from app.settings import settings
+# Lazy settings import - settings are loaded on first access, not at import time
+_settings_cache = None
+
+def _get_settings():
+    """Lazily load settings to avoid import-time errors"""
+    global _settings_cache
+    if _settings_cache is None:
+        from app.settings import get_settings
+        _settings_cache = get_settings()
+    return _settings_cache
 
 logger = logging.getLogger(__name__)
 
@@ -344,7 +353,9 @@ class EmbeddingService:
     
     def __init__(self):
         self.openai_client = None
+        settings = _get_settings()
         if settings.OPENAI_API_KEY:
+            _ensure_openai()
             self.openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
     
     def get_embedding(
@@ -448,6 +459,7 @@ class VectorStoreService:
             from qdrant_client import QdrantClient
             from qdrant_client.http.models import Distance, VectorParams
             
+            settings = _get_settings()
             self.client = QdrantClient(
                 url=settings.QDRANT_URL,
                 api_key=settings.QDRANT_API_KEY if settings.QDRANT_API_KEY else None
@@ -638,7 +650,9 @@ class LLMService:
     
     def __init__(self):
         self.openai_client = None
+        settings = _get_settings()
         if settings.OPENAI_API_KEY:
+            _ensure_openai()
             self.openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
     
     def generate_response(
@@ -695,6 +709,7 @@ class LLMService:
         try:
             import google.generativeai as genai
             
+            settings = _get_settings()
             if not settings.GEMINI_API_KEY:
                 raise ValueError("Gemini API key not configured")
             
@@ -757,6 +772,7 @@ class RAGService:
     """
     
     def __init__(self):
+        settings = _get_settings()
         self.chunker = TextChunker(
             chunk_size=settings.RAG_DEFAULT_CHUNK_SIZE,
             chunk_overlap=settings.RAG_DEFAULT_CHUNK_OVERLAP
