@@ -224,7 +224,7 @@ def create_pkb_task(
                 embedded_at=datetime.utcnow(),
                 vector_collection=collection_name,
                 vector_point_id=point_id,
-                metadata=chunk.metadata
+                chunk_metadata=chunk.metadata
             )
             db.add(db_chunk)
             total_tokens += chunk.token_count

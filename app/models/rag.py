@@ -123,8 +123,8 @@ class PKBChunk(Base):
     vector_collection = Column(String(255), nullable=True)
     vector_point_id = Column(String(100), nullable=True)
     
-    # Metadata
-    metadata = Column(JSON, nullable=True)
+    # Chunk metadata (not 'metadata' - it's reserved in SQLAlchemy)
+    chunk_metadata = Column(JSON, nullable=True)
     
     # Zaman damgaları
     created_at = Column(DateTime, default=datetime.utcnow)
