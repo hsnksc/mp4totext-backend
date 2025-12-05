@@ -196,52 +196,91 @@ def update_local_db():
     import os
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     
-    from app.database import SessionLocal
-    from app.models.ai_model_pricing import AIModelPricing
-    from app.models.credit_pricing import CreditPricingConfig
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import sessionmaker
     
-    db = SessionLocal()
+    # Veritabanı bağlantısı - environment variable'dan al
+    DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./mp4totext.db")
+    
+    # PostgreSQL için asyncpg yerine psycopg2 kullan
+    if DATABASE_URL.startswith("postgresql+asyncpg"):
+        DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg", "postgresql")
+    
+    engine = create_engine(DATABASE_URL)
+    Session = sessionmaker(bind=engine)
+    db = Session()
     
     try:
-        print("🚀 Updating Local Database Pricing...")
+        print("🚀 Updating Database Pricing...")
         print("=" * 60)
+        print(f"   Database: {DATABASE_URL[:50]}...")
         
-        # Update AI models
+        # Update AI models with raw SQL
         print("\n📤 Updating AI model multipliers...")
+        updated_models = 0
         for model in UPDATED_MODELS:
-            existing = db.query(AIModelPricing).filter_by(model_key=model["model_key"]).first()
-            if existing:
-                existing.credit_multiplier = model["credit_multiplier"]
-                if model.get("cost_per_1k_chars"):
-                    existing.cost_per_1k_chars = model["cost_per_1k_chars"]
-                print(f"   ✅ Updated: {model['model_key']} → {model['credit_multiplier']}x")
-            else:
-                print(f"   ⚠️ Not found: {model['model_key']}")
+            try:
+                result = db.execute(text("""
+                    UPDATE ai_model_pricing 
+                    SET credit_multiplier = :multiplier,
+                        cost_per_1k_chars = :cost_per_1k
+                    WHERE model_key = :model_key
+                """), {
+                    "multiplier": model["credit_multiplier"],
+                    "cost_per_1k": model.get("cost_per_1k_chars"),
+                    "model_key": model["model_key"]
+                })
+                if result.rowcount > 0:
+                    print(f"   ✅ Updated: {model['model_key']} → {model['credit_multiplier']}x")
+                    updated_models += 1
+                else:
+                    print(f"   ⚠️ Not found: {model['model_key']}")
+            except Exception as e:
+                print(f"   ❌ Error updating {model['model_key']}: {e}")
         
-        # Update pricing configs
+        # Update pricing configs with raw SQL
         print("\n📤 Updating pricing configs...")
+        updated_configs = 0
         for config in PRICING_CONFIGS:
-            existing = db.query(CreditPricingConfig).filter_by(operation_key=config["operation_key"]).first()
-            if existing:
-                existing.cost_per_unit = config["cost_per_unit"]
-                if config.get("unit_description"):
-                    existing.unit_description = config["unit_description"]
-                print(f"   ✅ Updated: {config['operation_key']} → {config['cost_per_unit']}")
-            else:
-                # Create new
-                new_config = CreditPricingConfig(
-                    operation_key=config["operation_key"],
-                    operation_name=config["operation_key"].replace("_", " ").title(),
-                    cost_per_unit=config["cost_per_unit"],
-                    unit_description=config.get("unit_description", "birim başına"),
-                    is_active=True
-                )
-                db.add(new_config)
-                print(f"   ✅ Created: {config['operation_key']} → {config['cost_per_unit']}")
+            try:
+                # Try update first
+                result = db.execute(text("""
+                    UPDATE credit_pricing_configs 
+                    SET cost_per_unit = :cost,
+                        unit_description = :unit_desc
+                    WHERE operation_key = :op_key
+                """), {
+                    "cost": config["cost_per_unit"],
+                    "unit_desc": config.get("unit_description", "birim başına"),
+                    "op_key": config["operation_key"]
+                })
+                if result.rowcount > 0:
+                    print(f"   ✅ Updated: {config['operation_key']} → {config['cost_per_unit']}")
+                    updated_configs += 1
+                else:
+                    # Try insert if not exists
+                    try:
+                        db.execute(text("""
+                            INSERT INTO credit_pricing_configs (operation_key, operation_name, cost_per_unit, unit_description, is_active)
+                            VALUES (:op_key, :op_name, :cost, :unit_desc, true)
+                        """), {
+                            "op_key": config["operation_key"],
+                            "op_name": config["operation_key"].replace("_", " ").title(),
+                            "cost": config["cost_per_unit"],
+                            "unit_desc": config.get("unit_description", "birim başına")
+                        })
+                        print(f"   ✅ Created: {config['operation_key']} → {config['cost_per_unit']}")
+                        updated_configs += 1
+                    except:
+                        print(f"   ⚠️ Not found: {config['operation_key']}")
+            except Exception as e:
+                print(f"   ❌ Error updating {config['operation_key']}: {e}")
         
         db.commit()
         print("\n" + "=" * 60)
-        print("✅ Local database updated successfully!")
+        print(f"✅ Database updated successfully!")
+        print(f"   Models updated: {updated_models}")
+        print(f"   Configs updated: {updated_configs}")
         print("=" * 60)
         
     except Exception as e:
