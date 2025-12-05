@@ -813,42 +813,49 @@ async def create_pkb(
     
     settings = get_settings()
     
-    # Check if PKB columns exist by trying to query them
-    try:
-        sql = text("""
-            SELECT id, content, title, pkb_enabled, pkb_status
-            FROM sources
-            WHERE id = :source_id AND user_id = :user_id
-        """)
-        result = db.execute(sql, {"source_id": source_id, "user_id": current_user.id})
-        row = result.fetchone()
-    except Exception as e:
-        logger.error(f"❌ PKB columns don't exist in database: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="PKB feature requires database migration. Please run: python add_source_pkb_fields.py"
-        )
+    # First check if source exists (basic columns only)
+    check_sql = text("SELECT id, content, title FROM sources WHERE id = :source_id AND user_id = :user_id")
+    check_result = db.execute(check_sql, {"source_id": source_id, "user_id": current_user.id})
+    source_row = check_result.fetchone()
     
-    if not row:
+    if not source_row:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Source not found"
         )
     
-    source_id_db, content, title, pkb_enabled, pkb_status = row
-    
-    # Check if already has PKB
-    if pkb_enabled and pkb_status == "ready":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="PKB already exists for this source"
-        )
+    source_id_db, content, title = source_row
     
     # Check content
     if not content or len(content.strip()) < 100:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Source content too short for PKB (minimum 100 characters)"
+        )
+    
+    # Try to check PKB status (columns may not exist)
+    pkb_enabled = False
+    pkb_status = "not_created"
+    try:
+        pkb_sql = text("SELECT pkb_enabled, pkb_status FROM sources WHERE id = :source_id")
+        pkb_result = db.execute(pkb_sql, {"source_id": source_id})
+        pkb_row = pkb_result.fetchone()
+        if pkb_row:
+            pkb_enabled = bool(pkb_row[0]) if pkb_row[0] is not None else False
+            pkb_status = pkb_row[1] or "not_created"
+    except Exception as e:
+        # PKB columns don't exist - need migration
+        logger.warning(f"⚠️ PKB columns don't exist, migration required: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Knowledge Base feature is not available yet. Database migration is required."
+        )
+    
+    # Check if already has PKB
+    if pkb_enabled and pkb_status == "ready":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="PKB already exists for this source"
         )
     
     # Calculate credits (estimate)
