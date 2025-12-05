@@ -29,6 +29,12 @@ class OperationType(str, enum.Enum):
     # Video generation
     VIDEO_GENERATION = "video_generation"
     
+    # RAG operations
+    RAG_PKB_CREATION = "rag_pkb_creation"
+    RAG_EMBEDDING = "rag_embedding"
+    RAG_CHAT = "rag_chat"
+    RAG_DOCUMENT = "rag_document"
+    
     # Credit purchase
     PURCHASE = "purchase"
     BONUS = "bonus"

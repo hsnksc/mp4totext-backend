@@ -5,18 +5,21 @@ from app.models.transcription import Transcription
 from app.models.generated_image import GeneratedImage
 from app.models.source import Source
 from app.models.rag import (
-    RAGSource, RAGSourceItem, RAGSourceChunk,
-    RAGChatSession, RAGChatMessage, RAGGeneratedDocument,
-    SourceStatus, SourceType, SourceItemType,
-    MessageRole, MessageType, ChatSessionStatus, DocumentType
+    PKBChunk, PKBChatSession, PKBChatMessage,
+    # Backward compatibility aliases
+    RAGSourceChunk, RAGChatSession, RAGChatMessage,
+    # Enums
+    MessageRole, MessageType, ChatSessionStatus, DocumentType,
+    SourceStatus, SourceType, SourceItemType
 )
 
 __all__ = [
     "User", "Transcription", "GeneratedImage", "Source",
-    # RAG Models
-    "RAGSource", "RAGSourceItem", "RAGSourceChunk",
-    "RAGChatSession", "RAGChatMessage", "RAGGeneratedDocument",
+    # PKB Models
+    "PKBChunk", "PKBChatSession", "PKBChatMessage",
+    # Backward compatibility
+    "RAGSourceChunk", "RAGChatSession", "RAGChatMessage",
     # Enums
-    "SourceStatus", "SourceType", "SourceItemType",
-    "MessageRole", "MessageType", "ChatSessionStatus", "DocumentType"
+    "MessageRole", "MessageType", "ChatSessionStatus", "DocumentType",
+    "SourceStatus", "SourceType", "SourceItemType"
 ]

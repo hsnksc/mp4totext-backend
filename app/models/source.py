@@ -76,6 +76,10 @@ class Source(Base):
     # Relationships
     user = relationship("User", back_populates="sources")
     transcription = relationship("Transcription", back_populates="sources")
+    
+    # PKB Relationships
+    pkb_chunks = relationship("PKBChunk", back_populates="source", cascade="all, delete-orphan")
+    pkb_chat_sessions = relationship("PKBChatSession", back_populates="source", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Source(id={self.id}, title='{self.title[:50]}...', user_id={self.user_id})>"

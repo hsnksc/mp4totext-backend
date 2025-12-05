@@ -1,27 +1,27 @@
 """
-Gistify RAG Celery Workers
+Gistify PKB Celery Workers
 ===========================
-PKB oluşturma ve döküman işleme için background task'lar.
+PKB (Personal Knowledge Base) oluşturma için background task'lar.
+
+NOT: Bu worker Source modeli ile çalışır. 
+Source.content alanındaki metni chunk'lara ayırır, embedding oluşturur ve Qdrant'a kaydeder.
 """
 
 import hashlib
-from typing import List, Dict, Any, Optional
+import uuid
+from typing import Dict, Any
 from datetime import datetime
-from celery import shared_task
 from celery.utils.log import get_task_logger
 
 from app.celery_app import celery_app
 from app.database import SessionLocal
-from app.models.rag import (
-    RAGSource, RAGSourceItem, RAGSourceChunk,
-    SourceStatus, SourceItemType
-)
+from app.models.source import Source
+from app.models.rag import PKBChunk
 from app.models.user import User
 from app.services.credit_service import get_credit_service
 from app.models.credit_transaction import OperationType
 from app.services.rag_service import (
-    RAGService, TextChunker, EmbeddingService, VectorStoreService,
-    EmbeddingModel, LLMModel
+    RAGService, TextChunker, EmbeddingModel
 )
 from app.settings import get_settings
 
@@ -58,8 +58,8 @@ def create_pkb_task(
     PKB (Personal Knowledge Base) oluşturma task'ı
     
     Bu task:
-    1. Source içindeki tüm içerikleri toplar
-    2. Metinleri chunk'lara ayırır
+    1. Source.content'i alır
+    2. Metni chunk'lara ayırır
     3. Her chunk için embedding oluşturur
     4. Vektörleri Qdrant'a kaydeder
     5. Database'i günceller
@@ -81,7 +81,7 @@ def create_pkb_task(
         })
         
         # Get source
-        source = db.query(RAGSource).filter(RAGSource.id == source_id).first()
+        source = db.query(Source).filter(Source.id == source_id).first()
         if not source:
             logger.error(f"❌ Source not found: {source_id}")
             return {"success": False, "error": "Source not found"}
@@ -92,36 +92,24 @@ def create_pkb_task(
             logger.error(f"❌ User not found: {user_id}")
             return {"success": False, "error": "User not found"}
         
+        # Update source status
+        source.pkb_status = "processing"
+        db.commit()
+        
         self.update_state(state='PROGRESS', meta={
-            'status': 'İçerikler toplanıyor',
+            'status': 'İçerik hazırlanıyor',
             'progress': 10
         })
         
-        # Get all items
-        items = db.query(RAGSourceItem).filter(RAGSourceItem.source_id == source_id).all()
-        if not items:
-            logger.warning(f"⚠️ No items in source: {source_id}")
-            return {"success": False, "error": "No items in source"}
+        # Check content
+        if not source.content or len(source.content.strip()) < 100:
+            logger.warning(f"⚠️ Source content too short: {source_id}")
+            source.pkb_status = "error"
+            source.pkb_error_message = "İçerik çok kısa (min 100 karakter)"
+            db.commit()
+            return {"success": False, "error": "Content too short"}
         
-        # Collect all texts
-        texts = []
-        for item in items:
-            if item.content:
-                texts.append({
-                    "content": item.content,
-                    "metadata": {
-                        "source_item_id": item.id,
-                        "title": item.title,
-                        "item_type": item.item_type.value if item.item_type else "note",
-                        "reference_id": item.reference_id
-                    }
-                })
-        
-        if not texts:
-            logger.warning(f"⚠️ No content in items: {source_id}")
-            return {"success": False, "error": "No content in items"}
-        
-        logger.info(f"📊 Collected {len(texts)} texts from source {source_id}")
+        logger.info(f"📊 Source content length: {len(source.content)} chars")
         
         self.update_state(state='PROGRESS', meta={
             'status': 'Chunking yapılıyor',
@@ -138,19 +126,21 @@ def create_pkb_task(
             emb_model = EmbeddingModel.OPENAI_LARGE
             emb_dimensions = 3072
         
-        # Chunk all texts
+        # Chunk the content
         chunker = TextChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-        all_chunks = []
+        chunks = chunker.chunk_text(source.content, metadata={
+            "source_id": source_id,
+            "title": source.title
+        })
         
-        for text_data in texts:
-            chunks = chunker.chunk_text(text_data["content"], text_data["metadata"])
-            all_chunks.extend(chunks)
-        
-        if not all_chunks:
+        if not chunks:
             logger.warning(f"⚠️ No chunks created: {source_id}")
+            source.pkb_status = "error"
+            source.pkb_error_message = "Chunk oluşturulamadı"
+            db.commit()
             return {"success": False, "error": "No chunks created"}
         
-        logger.info(f"📊 Created {len(all_chunks)} chunks")
+        logger.info(f"📊 Created {len(chunks)} chunks")
         
         self.update_state(state='PROGRESS', meta={
             'status': 'Embedding oluşturuluyor',
@@ -158,7 +148,7 @@ def create_pkb_task(
         })
         
         # Create embeddings in batches
-        chunk_texts = [c.content for c in all_chunks]
+        chunk_texts = [c.content for c in chunks]
         batch_size = 100
         all_embeddings = []
         
@@ -183,8 +173,8 @@ def create_pkb_task(
             'progress': 75
         })
         
-        # Create collection and upsert vectors
-        collection_name = f"user_{user_id}_source_{source_id}"
+        # Create collection name
+        collection_name = f"gistify_source_{source_id}"
         
         # Create collection
         rag_service.vector_store.create_collection(
@@ -192,25 +182,54 @@ def create_pkb_task(
             vector_size=emb_dimensions
         )
         
-        # Prepare points
+        # Delete old chunks from database
+        db.query(PKBChunk).filter(PKBChunk.source_id == source_id).delete()
+        db.commit()
+        
+        # Prepare points for Qdrant and save to database
         points = []
         total_tokens = 0
         
-        for i, (chunk, emb) in enumerate(zip(all_chunks, all_embeddings)):
-            point_id = hashlib.md5(
-                f"{collection_name}_{chunk.metadata.get('source_item_id', 0)}_{i}".encode()
-            ).hexdigest()
+        for i, (chunk, emb) in enumerate(zip(chunks, all_embeddings)):
+            point_id = str(uuid.uuid4())
+            chunk_id = f"source_{source_id}_chunk_{i}"
             
             points.append({
                 "id": point_id,
-                "vector": emb.embedding,
+                "vector": emb,
                 "payload": {
+                    "source_id": source_id,
+                    "user_id": user_id,
+                    "chunk_index": i,
                     "content": chunk.content,
-                    "chunk_index": chunk.index,
-                    **chunk.metadata
+                    "title": source.title,
+                    "metadata": chunk.metadata
                 }
             })
-            total_tokens += emb.total_tokens
+            
+            # Save chunk to database
+            db_chunk = PKBChunk(
+                source_id=source_id,
+                user_id=user_id,
+                chunk_id=chunk_id,
+                chunk_index=i,
+                content=chunk.content,
+                content_hash=hashlib.md5(chunk.content.encode()).hexdigest(),
+                token_count=chunk.token_count,
+                start_char=chunk.start_char,
+                end_char=chunk.end_char,
+                embedding_model=embedding_model,
+                embedding_dimensions=emb_dimensions,
+                is_embedded=True,
+                embedded_at=datetime.utcnow(),
+                vector_collection=collection_name,
+                vector_point_id=point_id,
+                metadata=chunk.metadata
+            )
+            db.add(db_chunk)
+            total_tokens += chunk.token_count
+        
+        db.commit()
         
         # Upsert to Qdrant
         rag_service.vector_store.upsert_vectors(
@@ -218,100 +237,54 @@ def create_pkb_task(
             points=points
         )
         
-        logger.info(f"✅ Upserted {len(points)} vectors to Qdrant")
+        logger.info(f"✅ Saved {len(points)} vectors to Qdrant")
         
         self.update_state(state='PROGRESS', meta={
-            'status': 'Database güncelleniyor',
+            'status': 'Tamamlanıyor',
             'progress': 90
         })
         
-        # Save chunks to database
-        db.query(RAGSourceChunk).filter(RAGSourceChunk.source_id == source_id).delete()
+        # Calculate credits
+        # 1 credit per 1000 tokens for embedding
+        credits_used = round(total_tokens / 1000, 2)
         
-        for i, (chunk, emb) in enumerate(zip(all_chunks, all_embeddings)):
-            db_chunk = RAGSourceChunk(
-                source_id=source_id,
-                item_id=chunk.metadata.get("source_item_id"),
-                chunk_index=chunk.index,
-                content=chunk.content,
-                token_count=emb.total_tokens,
-                vector_id=hashlib.md5(
-                    f"{collection_name}_{chunk.metadata.get('source_item_id', 0)}_{i}".encode()
-                ).hexdigest()
-            )
-            db.add(db_chunk)
-        
-        # Update source
-        source.pkb_enabled = True
-        source.status = SourceStatus.INDEXED
-        source.vector_collection_name = collection_name
-        source.total_chunks = len(all_chunks)
-        source.total_tokens = total_tokens
-        source.embedding_model = embedding_model
-        source.embedding_dimensions = emb_dimensions
-        source.chunk_size = chunk_size
-        source.chunk_overlap = chunk_overlap
-        source.pkb_created_at = datetime.utcnow()
-        source.updated_at = datetime.utcnow()
-        
-        # Mark items as indexed
-        for item in items:
-            item.is_indexed = True
-        
-        # Calculate and deduct credits
-        # PKB: 0.1 credit per chunk + embedding costs
-        embedding_credits = (total_tokens / 1000) * 0.1  # 0.1 per 1K tokens
-        pkb_credits = len(all_chunks) * 0.1
-        total_credits = embedding_credits + pkb_credits
-        
+        # Deduct credits
         credit_service = get_credit_service(db)
         credit_service.deduct_credits(
             user_id=user_id,
-            amount=total_credits,
+            amount=credits_used,
             operation_type=OperationType.RAG_PKB_CREATION,
-            description=f"PKB Creation: {source.name}",
+            description=f"PKB oluşturma: {source.title[:50]}",
             metadata={
                 "source_id": source_id,
-                "chunk_count": len(all_chunks),
-                "total_tokens": total_tokens
+                "chunks": len(chunks),
+                "tokens": total_tokens,
+                "embedding_model": embedding_model
             }
         )
         
-        source.total_credits_used = (source.total_credits_used or 0) + total_credits
-        
+        # Update source
+        source.pkb_enabled = True
+        source.pkb_status = "ready"
+        source.pkb_collection_name = collection_name
+        source.pkb_chunk_count = len(chunks)
+        source.pkb_embedding_model = embedding_model
+        source.pkb_chunk_size = chunk_size
+        source.pkb_chunk_overlap = chunk_overlap
+        source.pkb_created_at = datetime.utcnow()
+        source.pkb_credits_used = credits_used
+        source.pkb_error_message = None
         db.commit()
         
-        logger.info(f"✅ PKB creation completed: source_id={source_id}, chunks={len(all_chunks)}, credits={total_credits:.2f}")
-        
-        self.update_state(state='SUCCESS', meta={
-            'status': 'Tamamlandı',
-            'progress': 100
-        })
-        
-        # Send WebSocket notification
-        try:
-            from app.websocket import manager
-            import asyncio
-            asyncio.run(manager.send_personal_message(
-                message={
-                    "type": "pkb_created",
-                    "source_id": source_id,
-                    "chunk_count": len(all_chunks),
-                    "credits_used": round(total_credits, 2)
-                },
-                user_id=user_id
-            ))
-        except Exception as ws_error:
-            logger.warning(f"⚠️ WebSocket notification failed: {ws_error}")
+        logger.info(f"✅ PKB creation completed: source_id={source_id}, chunks={len(chunks)}, credits={credits_used}")
         
         return {
             "success": True,
             "source_id": source_id,
-            "collection_name": collection_name,
-            "chunk_count": len(all_chunks),
-            "vector_count": len(points),
-            "total_tokens": total_tokens,
-            "credits_used": round(total_credits, 2)
+            "chunks": len(chunks),
+            "tokens": total_tokens,
+            "credits_used": credits_used,
+            "collection_name": collection_name
         }
         
     except Exception as e:
@@ -319,386 +292,106 @@ def create_pkb_task(
         
         # Update source status
         try:
-            source = db.query(RAGSource).filter(RAGSource.id == source_id).first()
+            source = db.query(Source).filter(Source.id == source_id).first()
             if source:
-                source.status = SourceStatus.ERROR
+                source.pkb_status = "error"
+                source.pkb_error_message = str(e)[:500]
                 db.commit()
         except:
             pass
         
-        db.rollback()
         raise self.retry(exc=e)
-    
+        
     finally:
         db.close()
 
 
 # =========================================================================
-# REINDEX & DELETE PKB TASKS
+# PKB DELETE TASK
 # =========================================================================
 
-@celery_app.task(bind=True, max_retries=3)
-def reindex_pkb_task(
-    self,
-    source_id: int,
-    user_id: int,
-    options: Dict[str, Any]
-):
-    """PKB'yi yeniden oluştur"""
-    logger.info(f"🔄 Reindexing PKB: source_id={source_id}")
-    
-    # Mevcut vektör koleksiyonunu sil
-    try:
-        rag_service = create_rag_service()
-        rag_service.delete_knowledge_base(user_id, source_id)
-    except Exception as e:
-        logger.warning(f"⚠️ Failed to delete existing PKB: {e}")
-    
-    # Yeniden oluştur
-    return create_pkb_task(
-        source_id=source_id,
-        user_id=user_id,
-        options=options
-    )
-
-
-@celery_app.task(bind=True)
+@celery_app.task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=30
+)
 def delete_pkb_task(self, source_id: int, user_id: int):
-    """PKB'yi sil"""
-    logger.info(f"🗑️ Deleting PKB: source_id={source_id}")
+    """
+    PKB silme task'ı
     
+    1. Qdrant collection'ı siler
+    2. Database'den chunk'ları siler
+    3. Source'u günceller
+    """
     db = SessionLocal()
-    
-    try:
-        rag_service = create_rag_service()
-        success = rag_service.delete_knowledge_base(user_id, source_id)
-        
-        # Update database
-        source = db.query(RAGSource).filter(RAGSource.id == source_id).first()
-        if source:
-            source.pkb_enabled = False
-            source.vector_collection_name = None
-            source.total_chunks = 0
-            source.status = SourceStatus.READY
-            db.commit()
-        
-        # Delete chunks
-        db.query(RAGSourceChunk).filter(RAGSourceChunk.source_id == source_id).delete()
-        db.commit()
-        
-        logger.info(f"✅ PKB deleted: source_id={source_id}")
-        
-        return {"success": success, "source_id": source_id}
-        
-    except Exception as e:
-        logger.error(f"❌ PKB deletion failed: {e}")
-        db.rollback()
-        return {"success": False, "error": str(e)}
-    
-    finally:
-        db.close()
-
-
-# =========================================================================
-# INCREMENTAL INDEXING TASK
-# =========================================================================
-
-@celery_app.task(bind=True)
-def index_new_item_task(
-    self,
-    source_id: int,
-    source_item_id: int,
-    user_id: int,
-    content: str,
-    metadata: Dict[str, Any] = None
-):
-    """Yeni eklenen içeriği index'e ekle (incremental indexing)"""
-    logger.info(f"📝 Indexing new item: source_id={source_id}, item_id={source_item_id}")
-    
-    db = SessionLocal()
+    logger.info(f"🗑️ PKB deletion started: source_id={source_id}")
     
     try:
         # Get source
-        source = db.query(RAGSource).filter(RAGSource.id == source_id).first()
-        if not source or not source.pkb_enabled:
-            logger.warning(f"⚠️ Source not ready for indexing: {source_id}")
-            return {"success": False, "error": "Source not PKB enabled"}
+        source = db.query(Source).filter(Source.id == source_id).first()
+        if not source:
+            logger.warning(f"⚠️ Source not found: {source_id}")
+            return {"success": False, "error": "Source not found"}
         
-        rag_service = create_rag_service()
-        collection_name = source.vector_collection_name or f"user_{user_id}_source_{source_id}"
+        # Delete from Qdrant
+        if source.pkb_collection_name:
+            try:
+                rag_service = create_rag_service()
+                rag_service.vector_store.delete_collection(source.pkb_collection_name)
+                logger.info(f"✅ Deleted Qdrant collection: {source.pkb_collection_name}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not delete Qdrant collection: {e}")
         
-        # Chunk content
-        chunk_size = source.chunk_size or 512
-        chunk_overlap = source.chunk_overlap or 50
-        chunker = TextChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-        chunks = chunker.chunk_text(content, metadata or {})
+        # Delete chunks from database
+        deleted_count = db.query(PKBChunk).filter(PKBChunk.source_id == source_id).delete()
+        logger.info(f"✅ Deleted {deleted_count} chunks from database")
         
-        if not chunks:
-            return {"success": True, "chunks_added": 0}
-        
-        # Get embeddings
-        emb_model = EmbeddingModel.OPENAI_SMALL
-        if source.embedding_model == "text-embedding-3-large":
-            emb_model = EmbeddingModel.OPENAI_LARGE
-        
-        chunk_texts = [c.content for c in chunks]
-        embeddings = rag_service.embedding_service.get_embeddings_batch(
-            texts=chunk_texts,
-            model=emb_model
-        )
-        
-        # Prepare points
-        points = []
-        total_tokens = 0
-        
-        for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
-            point_id = hashlib.md5(
-                f"{collection_name}_{source_item_id}_{i}".encode()
-            ).hexdigest()
-            
-            points.append({
-                "id": point_id,
-                "vector": emb.embedding,
-                "payload": {
-                    "content": chunk.content,
-                    "chunk_index": chunk.index,
-                    "source_item_id": source_item_id,
-                    **chunk.metadata
-                }
-            })
-            total_tokens += emb.total_tokens
-            
-            # Save chunk to DB
-            db_chunk = RAGSourceChunk(
-                source_id=source_id,
-                item_id=source_item_id,
-                chunk_index=chunk.index,
-                content=chunk.content,
-                token_count=emb.total_tokens,
-                vector_id=point_id
-            )
-            db.add(db_chunk)
-        
-        # Upsert to Qdrant
-        rag_service.vector_store.upsert_vectors(
-            collection_name=collection_name,
-            points=points
-        )
-        
-        # Update source stats
-        source.total_chunks = (source.total_chunks or 0) + len(chunks)
-        source.total_tokens = (source.total_tokens or 0) + total_tokens
-        source.updated_at = datetime.utcnow()
-        
-        # Mark item as indexed
-        item = db.query(RAGSourceItem).filter(RAGSourceItem.id == source_item_id).first()
-        if item:
-            item.is_indexed = True
-        
-        # Deduct credits
-        credits = (total_tokens / 1000) * 0.1 + len(chunks) * 0.1
-        credit_service = get_credit_service(db)
-        credit_service.deduct_credits(
-            user_id=user_id,
-            amount=credits,
-            operation_type=OperationType.RAG_EMBEDDING,
-            description=f"Incremental indexing: {source_item_id}",
-            metadata={"source_id": source_id, "item_id": source_item_id}
-        )
-        
+        # Update source
+        source.pkb_enabled = False
+        source.pkb_status = "not_created"
+        source.pkb_collection_name = None
+        source.pkb_chunk_count = 0
+        source.pkb_embedding_model = None
+        source.pkb_chunk_size = None
+        source.pkb_chunk_overlap = None
+        source.pkb_created_at = None
+        source.pkb_error_message = None
         db.commit()
         
-        logger.info(f"✅ Item indexed: source_id={source_id}, item_id={source_item_id}, chunks={len(chunks)}")
+        logger.info(f"✅ PKB deletion completed: source_id={source_id}")
         
-        return {
-            "success": True,
-            "source_item_id": source_item_id,
-            "chunks_added": len(chunks),
-            "vectors_added": len(points),
-            "credits_used": round(credits, 2)
-        }
+        return {"success": True, "deleted_chunks": deleted_count}
         
     except Exception as e:
-        logger.error(f"❌ Item indexing failed: {e}")
-        db.rollback()
-        return {"success": False, "error": str(e)}
-    
+        logger.error(f"❌ PKB deletion failed: {e}", exc_info=True)
+        raise self.retry(exc=e)
+        
     finally:
         db.close()
 
 
 # =========================================================================
-# DOCUMENT GENERATION TASKS
+# PKB REINDEX TASK
 # =========================================================================
 
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=30)
-def generate_summary_task(
-    self,
-    source_id: int,
-    user_id: int,
-    length: str = "medium",
-    style: str = "professional"
-):
-    """Özet oluşturma task'ı"""
-    logger.info(f"📝 Generating summary: source_id={source_id}")
+@celery_app.task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60
+)
+def reindex_pkb_task(self, source_id: int, user_id: int, options: Dict[str, Any]):
+    """
+    PKB yeniden indexleme task'ı
     
-    try:
-        from app.services.rag_service import DocumentGeneratorService
-        
-        generator = DocumentGeneratorService()
-        result = generator.generate_summary(
-            user_id=user_id,
-            source_id=source_id,
-            length=length,
-            style=style
-        )
-        
-        logger.info(f"✅ Summary generated: source_id={source_id}")
-        return result
-        
-    except Exception as e:
-        logger.error(f"❌ Summary generation failed: {e}")
-        raise self.retry(exc=e)
-
-
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=30)
-def generate_report_task(
-    self,
-    source_id: int,
-    user_id: int,
-    report_type: str = "general",
-    sections: List[str] = None
-):
-    """Rapor oluşturma task'ı"""
-    logger.info(f"📝 Generating report: source_id={source_id}")
+    Mevcut PKB'yi silip yeniden oluşturur.
+    """
+    logger.info(f"🔄 PKB reindex started: source_id={source_id}")
     
-    try:
-        from app.services.rag_service import DocumentGeneratorService
-        
-        generator = DocumentGeneratorService()
-        result = generator.generate_report(
-            user_id=user_id,
-            source_id=source_id,
-            report_type=report_type,
-            sections=sections
-        )
-        
-        logger.info(f"✅ Report generated: source_id={source_id}")
-        return result
-        
-    except Exception as e:
-        logger.error(f"❌ Report generation failed: {e}")
-        raise self.retry(exc=e)
-
-
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=30)
-def generate_quiz_task(
-    self,
-    source_id: int,
-    user_id: int,
-    question_count: int = 10,
-    question_types: List[str] = None,
-    difficulty: str = "medium"
-):
-    """Quiz oluşturma task'ı"""
-    logger.info(f"📝 Generating quiz: source_id={source_id}")
+    # First delete
+    delete_result = delete_pkb_task(source_id, user_id)
+    if not delete_result.get("success"):
+        return {"success": False, "error": "Delete failed"}
     
-    try:
-        from app.services.rag_service import DocumentGeneratorService
-        
-        generator = DocumentGeneratorService()
-        result = generator.generate_quiz(
-            user_id=user_id,
-            source_id=source_id,
-            question_count=question_count,
-            question_types=question_types,
-            difficulty=difficulty
-        )
-        
-        logger.info(f"✅ Quiz generated: source_id={source_id}")
-        return result
-        
-    except Exception as e:
-        logger.error(f"❌ Quiz generation failed: {e}")
-        raise self.retry(exc=e)
-
-
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=30)
-def generate_analysis_task(
-    self,
-    source_id: int,
-    user_id: int,
-    analysis_type: str = "swot",
-    focus_areas: List[str] = None
-):
-    """Analiz oluşturma task'ı"""
-    logger.info(f"📝 Generating analysis: source_id={source_id}")
-    
-    try:
-        from app.services.rag_service import DocumentGeneratorService
-        
-        generator = DocumentGeneratorService()
-        result = generator.generate_analysis(
-            user_id=user_id,
-            source_id=source_id,
-            analysis_type=analysis_type,
-            focus_areas=focus_areas
-        )
-        
-        logger.info(f"✅ Analysis generated: source_id={source_id}")
-        return result
-        
-    except Exception as e:
-        logger.error(f"❌ Analysis generation failed: {e}")
-        raise self.retry(exc=e)
-
-
-# =========================================================================
-# MAINTENANCE TASKS
-# =========================================================================
-
-@celery_app.task
-def cleanup_orphan_vectors_task(user_id: int):
-    """Sahipsiz vektörleri temizle"""
-    logger.info(f"🧹 Cleaning up orphan vectors: user_id={user_id}")
-    
-    # Bu task production'da database ile senkronizasyon yapar
-    return {
-        "user_id": user_id,
-        "status": "completed",
-        "message": "Cleanup task completed"
-    }
-
-
-@celery_app.task
-def calculate_source_stats_task(source_id: int, user_id: int):
-    """Source istatistiklerini hesapla"""
-    logger.info(f"📊 Calculating source stats: source_id={source_id}")
-    
-    db = SessionLocal()
-    
-    try:
-        rag_service = create_rag_service()
-        collection_name = f"user_{user_id}_source_{source_id}"
-        
-        info = rag_service.vector_store.get_collection_info(collection_name)
-        
-        # Update source in database
-        source = db.query(RAGSource).filter(RAGSource.id == source_id).first()
-        if source:
-            source.total_chunks = info.get("vectors_count", 0)
-            db.commit()
-        
-        return {
-            "source_id": source_id,
-            "vector_count": info.get("vectors_count", 0),
-            "points_count": info.get("points_count", 0),
-            "status": info.get("status", "unknown")
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ Stats calculation failed: {e}")
-        return {"source_id": source_id, "error": str(e)}
-    
-    finally:
-        db.close()
+    # Then recreate
+    create_result = create_pkb_task(source_id, user_id, options)
+    return create_result
