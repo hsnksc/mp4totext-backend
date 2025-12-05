@@ -747,26 +747,59 @@ async def get_pkb_status(
     """
     Get PKB status for a source
     """
-    source = db.query(Source).filter(
-        Source.id == source_id,
-        Source.user_id == current_user.id
-    ).first()
+    from sqlalchemy import text
     
-    if not source:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Source not found"
-        )
-    
-    return {
-        "pkb_enabled": source.pkb_enabled or False,
-        "pkb_status": source.pkb_status or "not_created",
-        "chunk_count": source.pkb_chunk_count or 0,
-        "embedding_model": source.pkb_embedding_model,
-        "credits_used": source.pkb_credits_used or 0.0,
-        "error_message": source.pkb_error_message,
-        "created_at": source.pkb_created_at.isoformat() if source.pkb_created_at else None
-    }
+    # First check if PKB columns exist by trying to query them
+    try:
+        sql = text("""
+            SELECT id, pkb_enabled, pkb_status, pkb_chunk_count, 
+                   pkb_embedding_model, pkb_credits_used, pkb_error_message, pkb_created_at
+            FROM sources
+            WHERE id = :source_id AND user_id = :user_id
+        """)
+        result = db.execute(sql, {"source_id": source_id, "user_id": current_user.id})
+        row = result.fetchone()
+        
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Source not found"
+            )
+        
+        return {
+            "pkb_enabled": row[1] or False,
+            "pkb_status": row[2] or "not_created",
+            "chunk_count": row[3] or 0,
+            "embedding_model": row[4],
+            "credits_used": row[5] or 0.0,
+            "error_message": row[6],
+            "created_at": row[7].isoformat() if row[7] else None
+        }
+    except Exception as e:
+        # PKB columns might not exist yet
+        logger.warning(f"⚠️ PKB status query failed (columns may not exist): {e}")
+        
+        # Fallback: check if source exists at least
+        sql = text("SELECT id FROM sources WHERE id = :source_id AND user_id = :user_id")
+        result = db.execute(sql, {"source_id": source_id, "user_id": current_user.id})
+        row = result.fetchone()
+        
+        if not row:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Source not found"
+            )
+        
+        # Return default PKB status (not created)
+        return {
+            "pkb_enabled": False,
+            "pkb_status": "not_created",
+            "chunk_count": 0,
+            "embedding_model": None,
+            "credits_used": 0.0,
+            "error_message": "PKB feature requires database migration. Please contact support.",
+            "created_at": None
+        }
 
 
 @router.post("/{source_id}/pkb/create")
@@ -782,37 +815,51 @@ async def create_pkb(
     """
     from app.services.rag_service import TextChunker, EmbeddingService, VectorStoreService
     from app.settings import get_settings
+    from sqlalchemy import text
     import uuid
     
     settings = get_settings()
     
-    source = db.query(Source).filter(
-        Source.id == source_id,
-        Source.user_id == current_user.id
-    ).first()
+    # Check if PKB columns exist by trying to query them
+    try:
+        sql = text("""
+            SELECT id, content, title, pkb_enabled, pkb_status
+            FROM sources
+            WHERE id = :source_id AND user_id = :user_id
+        """)
+        result = db.execute(sql, {"source_id": source_id, "user_id": current_user.id})
+        row = result.fetchone()
+    except Exception as e:
+        logger.error(f"❌ PKB columns don't exist in database: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="PKB feature requires database migration. Please run: python add_source_pkb_fields.py"
+        )
     
-    if not source:
+    if not row:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Source not found"
         )
     
+    source_id_db, content, title, pkb_enabled, pkb_status = row
+    
     # Check if already has PKB
-    if source.pkb_enabled and source.pkb_status == "ready":
+    if pkb_enabled and pkb_status == "ready":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="PKB already exists for this source"
         )
     
     # Check content
-    if not source.content or len(source.content.strip()) < 100:
+    if not content or len(content.strip()) < 100:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Source content too short for PKB (minimum 100 characters)"
         )
     
     # Calculate credits (estimate)
-    content_length = len(source.content)
+    content_length = len(content)
     estimated_chunks = content_length // request.chunk_size + 1
     credits_needed = estimated_chunks * 0.001  # 0.001 credits per chunk
     
@@ -823,22 +870,42 @@ async def create_pkb(
             detail=f"Insufficient credits. Need {credits_needed:.3f}, have {current_user.credits:.3f}"
         )
     
-    # Update source status
+    # Update source status using raw SQL
     collection_name = f"source_{source_id}_{uuid.uuid4().hex[:8]}"
-    source.pkb_status = "processing"
-    source.pkb_collection_name = collection_name
-    source.pkb_embedding_model = request.embedding_model
-    source.pkb_chunk_size = request.chunk_size
-    source.pkb_chunk_overlap = request.chunk_overlap
-    source.updated_at = datetime.utcnow()
-    db.commit()
+    try:
+        update_sql = text("""
+            UPDATE sources SET
+                pkb_status = :status,
+                pkb_collection_name = :collection,
+                pkb_embedding_model = :model,
+                pkb_chunk_size = :chunk_size,
+                pkb_chunk_overlap = :chunk_overlap,
+                updated_at = :updated_at
+            WHERE id = :source_id
+        """)
+        db.execute(update_sql, {
+            "status": "processing",
+            "collection": collection_name,
+            "model": request.embedding_model,
+            "chunk_size": request.chunk_size,
+            "chunk_overlap": request.chunk_overlap,
+            "updated_at": datetime.utcnow(),
+            "source_id": source_id
+        })
+        db.commit()
+    except Exception as e:
+        logger.error(f"❌ Failed to update source for PKB: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update source: {str(e)}"
+        )
     
     # Start background task
     background_tasks.add_task(
         process_pkb_creation,
         source_id=source_id,
         user_id=current_user.id,
-        content=source.content,
+        content=content,  # Using content from raw SQL query above
         collection_name=collection_name,
         embedding_model=request.embedding_model,
         chunk_size=request.chunk_size,
@@ -951,42 +1018,67 @@ async def delete_pkb(
     Delete PKB for a source
     """
     from app.services.rag_service import VectorStoreService
+    from sqlalchemy import text
     
-    source = db.query(Source).filter(
-        Source.id == source_id,
-        Source.user_id == current_user.id
-    ).first()
+    # Query PKB status using raw SQL
+    try:
+        sql = text("""
+            SELECT id, pkb_enabled, pkb_collection_name
+            FROM sources
+            WHERE id = :source_id AND user_id = :user_id
+        """)
+        result = db.execute(sql, {"source_id": source_id, "user_id": current_user.id})
+        row = result.fetchone()
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="PKB feature requires database migration"
+        )
     
-    if not source:
+    if not row:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Source not found"
         )
     
-    if not source.pkb_enabled:
+    source_id_db, pkb_enabled, pkb_collection_name = row
+    
+    if not pkb_enabled:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No PKB exists for this source"
         )
     
     # Delete collection from vector store
-    if source.pkb_collection_name:
+    if pkb_collection_name:
         try:
             vector_store = VectorStoreService()
-            await vector_store.delete_collection(source.pkb_collection_name)
-            logger.info(f"🗑️ Deleted collection {source.pkb_collection_name}")
+            await vector_store.delete_collection(pkb_collection_name)
+            logger.info(f"🗑️ Deleted collection {pkb_collection_name}")
         except Exception as e:
             logger.warning(f"⚠️ Failed to delete collection: {e}")
     
-    # Reset PKB fields
-    source.pkb_enabled = False
-    source.pkb_status = "not_created"
-    source.pkb_collection_name = None
-    source.pkb_chunk_count = 0
-    source.pkb_created_at = None
-    source.pkb_error_message = None
-    source.updated_at = datetime.utcnow()
-    db.commit()
+    # Reset PKB fields using raw SQL
+    try:
+        update_sql = text("""
+            UPDATE sources SET
+                pkb_enabled = 0,
+                pkb_status = 'not_created',
+                pkb_collection_name = NULL,
+                pkb_chunk_count = 0,
+                pkb_created_at = NULL,
+                pkb_error_message = NULL,
+                updated_at = :updated_at
+            WHERE id = :source_id
+        """)
+        db.execute(update_sql, {"updated_at": datetime.utcnow(), "source_id": source_id})
+        db.commit()
+    except Exception as e:
+        logger.error(f"❌ Failed to reset PKB fields: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete PKB: {str(e)}"
+        )
     
     logger.info(f"🗑️ PKB deleted for source {source_id}")
     
@@ -1005,19 +1097,32 @@ async def chat_with_pkb(
     """
     from app.services.rag_service import VectorStoreService, EmbeddingService, LLMService
     from app.services.credit_service import get_credit_service
+    from sqlalchemy import text
     
-    source = db.query(Source).filter(
-        Source.id == source_id,
-        Source.user_id == current_user.id
-    ).first()
+    # Query PKB status using raw SQL
+    try:
+        sql = text("""
+            SELECT id, pkb_enabled, pkb_status, pkb_collection_name, pkb_embedding_model
+            FROM sources
+            WHERE id = :source_id AND user_id = :user_id
+        """)
+        result = db.execute(sql, {"source_id": source_id, "user_id": current_user.id})
+        row = result.fetchone()
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="PKB feature requires database migration"
+        )
     
-    if not source:
+    if not row:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Source not found"
         )
     
-    if not source.pkb_enabled or source.pkb_status != "ready":
+    source_id_db, pkb_enabled, pkb_status, pkb_collection_name, pkb_embedding_model = row
+    
+    if not pkb_enabled or pkb_status != "ready":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="PKB not ready for this source"
@@ -1045,13 +1150,13 @@ async def chat_with_pkb(
         embedding_service = EmbeddingService()
         query_embedding = await embedding_service.get_embeddings(
             texts=[message],
-            model=source.pkb_embedding_model or "text-embedding-3-small"
+            model=pkb_embedding_model or "text-embedding-3-small"
         )
         
         # Search vector store
         vector_store = VectorStoreService()
         results = await vector_store.search(
-            collection_name=source.pkb_collection_name,
+            collection_name=pkb_collection_name,
             query_vector=query_embedding[0],
             limit=5
         )
