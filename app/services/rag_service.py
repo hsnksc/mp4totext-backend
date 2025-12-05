@@ -15,8 +15,25 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
-import tiktoken
-from openai import OpenAI, AsyncOpenAI
+# Lazy imports - these may not be installed in all environments
+tiktoken = None
+OpenAI = None
+AsyncOpenAI = None
+
+def _ensure_tiktoken():
+    global tiktoken
+    if tiktoken is None:
+        import tiktoken as _tiktoken
+        tiktoken = _tiktoken
+    return tiktoken
+
+def _ensure_openai():
+    global OpenAI, AsyncOpenAI
+    if OpenAI is None:
+        from openai import OpenAI as _OpenAI, AsyncOpenAI as _AsyncOpenAI
+        OpenAI = _OpenAI
+        AsyncOpenAI = _AsyncOpenAI
+    return OpenAI, AsyncOpenAI
 
 from app.settings import settings
 
@@ -148,13 +165,21 @@ class TextChunker:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         try:
-            self.tokenizer = tiktoken.encoding_for_model(model)
+            tk = _ensure_tiktoken()
+            self.tokenizer = tk.encoding_for_model(model)
         except KeyError:
             # Fallback to cl100k_base for unknown models
-            self.tokenizer = tiktoken.get_encoding("cl100k_base")
+            tk = _ensure_tiktoken()
+            self.tokenizer = tk.get_encoding("cl100k_base")
+        except Exception as e:
+            logger.warning(f"⚠️ tiktoken not available, using simple tokenizer: {e}")
+            self.tokenizer = None
     
     def count_tokens(self, text: str) -> int:
         """Token sayısını hesapla"""
+        if self.tokenizer is None:
+            # Simple fallback: estimate ~4 chars per token
+            return len(text) // 4
         return len(self.tokenizer.encode(text))
     
     def chunk_text(
@@ -705,10 +730,16 @@ class LLMService:
                 )
             )
             
-            # Token sayısını tahmin et
-            tokenizer = tiktoken.get_encoding("cl100k_base")
-            input_tokens = sum(len(tokenizer.encode(m.get("content", ""))) for m in messages)
-            output_tokens = len(tokenizer.encode(response.text))
+            # Token sayısını tahmin et (tiktoken optional)
+            try:
+                tk = _ensure_tiktoken()
+                tokenizer = tk.get_encoding("cl100k_base")
+                input_tokens = sum(len(tokenizer.encode(m.get("content", ""))) for m in messages)
+                output_tokens = len(tokenizer.encode(response.text))
+            except Exception:
+                # Fallback: estimate tokens
+                input_tokens = sum(len(m.get("content", "")) // 4 for m in messages)
+                output_tokens = len(response.text) // 4
             
             return response.text, input_tokens, output_tokens
         

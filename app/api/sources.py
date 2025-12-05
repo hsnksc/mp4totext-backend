@@ -806,11 +806,20 @@ async def create_pkb(
     """
     Create PKB (Personal Knowledge Base) for a source
     """
-    from app.services.rag_service import TextChunker, EmbeddingService, VectorStoreService
-    from app.settings import get_settings
     from sqlalchemy import text
     import uuid
     
+    # Lazy import - will fail gracefully if rag_service has issues
+    try:
+        from app.services.rag_service import TextChunker, EmbeddingService, VectorStoreService
+    except ImportError as e:
+        logger.error(f"❌ Failed to import rag_service: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Knowledge Base service is not available: {str(e)}"
+        )
+    
+    from app.settings import get_settings
     settings = get_settings()
     
     # First check if source exists (basic columns only)
