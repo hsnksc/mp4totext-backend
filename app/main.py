@@ -103,16 +103,24 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
         }
     )
     
+    # Get origin for CORS
+    origin = request.headers.get("origin", "")
+    cors_headers = {}
+    if origin in allow_origin_list or origin.endswith(".gistify.pro"):
+        cors_headers = {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+        }
+    
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={
-            "detail": "Internal server error occurred. Please try again later.",
+            "detail": str(exc),  # Always show error details for debugging
             "error_type": type(exc).__name__,
             "timestamp": datetime.utcnow().isoformat(),
             "path": request.url.path,
-            # Only include error details in development
-            **({"error_details": str(exc)} if settings.is_development else {})
         },
+        headers=cors_headers,
     )
 
 
