@@ -61,8 +61,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
-# Make startup script executable
-RUN chmod +x startup.sh
+# Fix Windows line endings (CRLF -> LF) and make startup script executable
+RUN sed -i 's/\r$//' startup.sh && chmod +x startup.sh
 
 # Copy supervisor config
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
