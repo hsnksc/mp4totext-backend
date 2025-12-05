@@ -5,8 +5,25 @@ import sqlite3
 import os
 from pathlib import Path
 
-# Database path
-DB_PATH = Path(__file__).parent / "mp4totext.db"
+# Database path - check multiple locations
+def get_db_path():
+    """Find database in various locations"""
+    paths = [
+        os.environ.get("DATABASE_PATH", ""),
+        "/data/mp4totext.db",
+        "/app/data/mp4totext.db",
+        "/app/mp4totext.db",
+        Path(__file__).parent / "mp4totext.db",
+    ]
+    
+    for p in paths:
+        if p and os.path.exists(str(p)):
+            return str(p)
+    
+    # Default fallback
+    return str(Path(__file__).parent / "mp4totext.db")
+
+DB_PATH = get_db_path()
 
 def migrate():
     print(f"📦 Connecting to database: {DB_PATH}")

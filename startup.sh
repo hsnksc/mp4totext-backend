@@ -46,6 +46,12 @@ if [ -f "add_ai_model_pricing.py" ]; then
     python add_ai_model_pricing.py || echo "  ⚠️ AI pricing migration skipped"
 fi
 
+# PKB/RAG fields for Sources migration
+if [ -f "add_source_pkb_fields.py" ]; then
+    echo "  → Running Source PKB fields migration..."
+    python add_source_pkb_fields.py || echo "  ⚠️ PKB fields migration skipped"
+fi
+
 echo "✅ Migrations complete!"
 
 # Start supervisor (FastAPI + Celery)
