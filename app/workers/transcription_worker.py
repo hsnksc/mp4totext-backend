@@ -1499,11 +1499,14 @@ def generate_transcript_images(
         
         try:
             credits_service = get_credit_service(db)
-            # Model-based credit pricing: SDXL=1, FLUX=2, IMAGEN=4 per image
+            # Model-based credit pricing (%50 kar marjlı - Aralık 2025)
+            # SDXL: $0.01-0.02 × 1.5 ÷ $0.02 = 0.75-1.5 kredi
+            # FLUX: $0.03-0.055 × 1.5 ÷ $0.02 = 2.25-4.13 kredi
+            # IMAGEN: $0.04-0.08 × 1.5 ÷ $0.02 = 3.0-6.0 kredi
             credit_multipliers = {
-                "sdxl": 1.0,
-                "flux": 2.0,
-                "imagen": 4.0
+                "sdxl": 1.0,      # Ortalama 1.0 kredi/görsel (eski: 1.0)
+                "flux": 3.0,      # Ortalama 3.0 kredi/görsel (eski: 2.0)
+                "imagen": 4.5     # Ortalama 4.5 kredi/görsel (eski: 4.0)
             }
             model_lower = model_type.lower()
             credit_per_image = credit_multipliers.get(model_lower, 1.0)
@@ -1643,17 +1646,23 @@ def generate_video_task(
             estimated_segments = max(1, min(estimated_segments, 20))  # Cap between 1-20
             logger.info(f"📊 Transcript: {words} words → ~{estimated_segments} segments")
         
-        # Calculate required credits
+        # Calculate required credits (%50 kar marjlı - Aralık 2025)
+        # Yeni Formül: Base(7.5) + (Segment × Görsel Fiyatı) + TTS maliyeti
         model_lower = model_type.lower()
         credit_multipliers = {
-            "sdxl": 1.0,
-            "flux": 2.0,
-            "imagen": 4.0
+            "sdxl": 0.75,     # 0.75 kredi/segment (eski: 1.0)
+            "flux": 2.25,     # 2.25 kredi/segment (eski: 2.0)
+            "imagen": 3.0     # 3.0 kredi/segment (eski: 4.0)
         }
-        image_credit_per_segment = credit_multipliers.get(model_lower, 1.0)
-        estimated_cost = image_credit_per_segment * estimated_segments * 2  # ×2 for image+audio
+        base_video_cost = 7.5  # Sabit başlangıç ücreti (eski: 20)
+        tts_cost_per_minute = 1.13  # TTS maliyeti/dk (eski: 0.5)
         
-        logger.info(f"💵 Estimated cost: {image_credit_per_segment} cr/img × {estimated_segments} segments × 2 = {estimated_cost} credits")
+        image_credit_per_segment = credit_multipliers.get(model_lower, 0.75)
+        # Tahmini video süresi: segment başına ~30 saniye = 0.5 dk
+        estimated_duration_minutes = estimated_segments * 0.5
+        estimated_cost = base_video_cost + (image_credit_per_segment * estimated_segments) + (tts_cost_per_minute * estimated_duration_minutes)
+        
+        logger.info(f"💵 Estimated cost: Base({base_video_cost}) + ({image_credit_per_segment} cr/img × {estimated_segments}) + (TTS {tts_cost_per_minute}/dk × {estimated_duration_minutes:.1f}dk) = {estimated_cost:.2f} credits")
         logger.info(f"💰 User balance: {user.credits} credits")
         
         # Check if user has enough credits
@@ -1910,12 +1919,13 @@ def generate_video_task(
         # 8. Deduct credits (actual cost based on real segment count)
         logger.info("💰 Deducting credits based on actual segments used...")
         
-        # Video formula: (image_credit × num_segments × 2) 
-        # Why ×2? Video requires higher quality + TTS generation
+        # Video formula (%50 kar marjlı - Aralık 2025):
+        # Base(7.5) + (Segment × Görsel Fiyatı) + (Dakika × TTS)
         num_segments = len(segments)
-        actual_cost = image_credit_per_segment * num_segments * 2
+        actual_duration_minutes = total_duration / 60.0 if total_duration else num_segments * 0.5
+        actual_cost = base_video_cost + (image_credit_per_segment * num_segments) + (tts_cost_per_minute * actual_duration_minutes)
         
-        logger.info(f"💵 Final cost: {image_credit_per_segment} cr/img × {num_segments} segments × 2 = {actual_cost} credits")
+        logger.info(f"💵 Final cost: Base({base_video_cost}) + ({image_credit_per_segment} × {num_segments}) + (TTS {tts_cost_per_minute} × {actual_duration_minutes:.1f}dk) = {actual_cost:.2f} credits")
         
         # Deduct credits (this should succeed because we checked at the start)
         try:
@@ -1923,7 +1933,7 @@ def generate_video_task(
                 user_id=user_id,
                 amount=actual_cost,
                 operation_type=OperationType.VIDEO_GENERATION,
-                description=f"Generated video with {model_type.upper()} - {num_segments} segments ({image_credit_per_segment}×{num_segments}×2 = {actual_cost} credits)",
+                description=f"Generated video with {model_type.upper()} - {num_segments} segments, {actual_duration_minutes:.1f}min ({actual_cost:.2f} credits)",
                 transcription_id=transcription_id,  # ✅ CRITICAL: Pass as parameter, not just metadata!
                 metadata={
                     "video_id": video_id,

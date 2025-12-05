@@ -29,20 +29,22 @@ class CreditPricing:
     
     # Fallback defaults (used if database is unavailable)
     # Now uses Float for fractional credits
+    # Updated: %50 kar marjlı yeni fiyatlar (Aralık 2025)
+    # Formül: Piyasa Maliyeti × 1.5 ÷ $0.02 = Kredi
     _DEFAULT_PRICING = {
-        "transcription_base": 1.0,        # 1 kredi/dakika
-        "speaker_recognition": 0.5,       # 0.5 kredi/dakika (resemblyzer/silero backend)
-        "speaker_diarization": 0.25,      # 0.25 kredi/dakika (pyannote.audio 3.1 Modal GPU)
-        "youtube_download": 10.0,
-        "ai_enhancement": 20.0,
-        "lecture_notes": 30.0,
-        "custom_prompt": 25.0,
-        "exam_questions": 35.0,
-        "translation": 15.0,
-        "tavily_web_search": 5.0,
-        "assemblyai_speech_understanding_per_minute": 1.2,  # Speech Understanding (full features for English)
-        "assemblyai_llm_gateway": 3.0,    # LLM Gateway fixed cost
-        "entity_detection_per_minute": 0.03,  # Entity Detection only (all languages)
+        "transcription_base": 0.45,       # 0.45 kredi/dakika (eski: 1.0) - Whisper $0.006/dk
+        "speaker_recognition": 0.15,      # 0.15 kredi/dakika (eski: 0.5) - Diarizasyon dahil
+        "speaker_diarization": 0.15,      # 0.15 kredi/dakika (eski: 0.25) - pyannote.audio Modal GPU
+        "youtube_download": 0.75,         # 0.75 kredi/video (eski: 10.0) - Sabit ücret
+        "ai_enhancement": 20.0,           # Base fiyat - model çarpanı uygulanır
+        "lecture_notes": 30.0,            # Base fiyat - model çarpanı uygulanır
+        "custom_prompt": 25.0,            # Base fiyat - model çarpanı uygulanır
+        "exam_questions": 35.0,           # Base fiyat - model çarpanı uygulanır
+        "translation": 15.0,              # Base fiyat - model çarpanı uygulanır
+        "tavily_web_search": 0.75,        # 0.75 kredi/arama (eski: 5.0) - Basic arama
+        "assemblyai_speech_understanding_per_minute": 0.90,  # 0.90 kredi/dk (eski: 1.2)
+        "assemblyai_llm_gateway": 3.75,   # 3.75 kredi/istek (eski: 3.0)
+        "entity_detection_per_minute": 0.23,  # 0.23 kredi/dk (eski: 0.03)
     }
     
     def __init__(self, db: Session):
