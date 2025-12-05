@@ -1,8 +1,11 @@
 # Dockerfile for MP4toText Backend
 # Python 3.12 + FastAPI + Celery Worker (Production Ready)
-# Build: 2025-11-28
+# Build: 2025-12-05-v2
 
 FROM python:3.12-slim AS base
+
+# Force cache bust for Coolify runc issue
+ARG CACHEBUST=2
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
@@ -14,8 +17,12 @@ ENV PYTHONUNBUFFERED=1 \
 # Set build arguments
 ARG DEBIAN_FRONTEND=noninteractive
 
+# Ensure shell is available (fix for runc issues)
+SHELL ["/bin/bash", "-c"]
+
 # Install system dependencies + supervisor + create directories
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
     build-essential \
     gcc \
     libpq-dev \
