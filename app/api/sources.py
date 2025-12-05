@@ -143,6 +143,16 @@ class SourceResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     
+    # PKB fields (optional - may not exist in older records)
+    pkb_enabled: Optional[bool] = None
+    pkb_status: Optional[str] = None
+    pkb_collection_name: Optional[str] = None
+    pkb_chunk_count: Optional[int] = None
+    pkb_embedding_model: Optional[str] = None
+    pkb_created_at: Optional[datetime] = None
+    pkb_credits_used: Optional[float] = None
+    pkb_error_message: Optional[str] = None
+    
     class Config:
         from_attributes = True
 
