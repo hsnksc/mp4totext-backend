@@ -173,7 +173,54 @@ class ExecuteMixUpRequest(BaseModel):
 # ENDPOINTS
 # ============================================================================
 
-@router.get("", response_model=List[SourceResponse])
+def source_to_response(source: Source) -> dict:
+    """
+    Safely convert Source model to response dict.
+    Handles missing PKB columns gracefully.
+    """
+    response = {
+        "id": source.id,
+        "user_id": source.user_id,
+        "title": source.title,
+        "description": source.description,
+        "content": source.content,
+        "source_items": source.source_items,
+        "ai_provider": source.ai_provider,
+        "ai_model": source.ai_model,
+        "credits_used": source.credits_used or 0.0,
+        "status": source.status,
+        "is_public": source.is_public,
+        "tags": source.tags,
+        "transcription_id": source.transcription_id,
+        "created_at": source.created_at,
+        "updated_at": source.updated_at,
+    }
+    
+    # PKB fields - safely access (may not exist in DB)
+    try:
+        response["pkb_enabled"] = getattr(source, 'pkb_enabled', None)
+        response["pkb_status"] = getattr(source, 'pkb_status', None)
+        response["pkb_collection_name"] = getattr(source, 'pkb_collection_name', None)
+        response["pkb_chunk_count"] = getattr(source, 'pkb_chunk_count', None)
+        response["pkb_embedding_model"] = getattr(source, 'pkb_embedding_model', None)
+        response["pkb_created_at"] = getattr(source, 'pkb_created_at', None)
+        response["pkb_credits_used"] = getattr(source, 'pkb_credits_used', None)
+        response["pkb_error_message"] = getattr(source, 'pkb_error_message', None)
+    except Exception:
+        # PKB columns don't exist yet
+        response["pkb_enabled"] = None
+        response["pkb_status"] = None
+        response["pkb_collection_name"] = None
+        response["pkb_chunk_count"] = None
+        response["pkb_embedding_model"] = None
+        response["pkb_created_at"] = None
+        response["pkb_credits_used"] = None
+        response["pkb_error_message"] = None
+    
+    return response
+
+
+@router.get("")
 async def get_user_sources(
     skip: int = 0,
     limit: int = 50,
@@ -185,18 +232,58 @@ async def get_user_sources(
     Get all Sources for the current user
     """
     try:
-        query = db.query(Source).filter(Source.user_id == current_user.id)
+        # Only select core columns that definitely exist
+        from sqlalchemy import text
         
-        if status:
-            query = query.filter(Source.status == status)
+        # Use raw SQL to avoid SQLAlchemy trying to access PKB columns
+        sql = text("""
+            SELECT id, user_id, title, description, content, source_items,
+                   ai_provider, ai_model, credits_used, status, is_public,
+                   tags, transcription_id, created_at, updated_at
+            FROM sources
+            WHERE user_id = :user_id
+            ORDER BY created_at DESC
+            LIMIT :limit OFFSET :skip
+        """)
         
-        sources = query.order_by(Source.created_at.desc()).offset(skip).limit(limit).all()
+        result = db.execute(sql, {
+            "user_id": current_user.id,
+            "limit": limit,
+            "skip": skip
+        })
         
-        # Refresh presigned URLs for image items
-        refreshed_sources = [refresh_source_image_urls(source) for source in sources]
+        sources = []
+        for row in result:
+            source_dict = {
+                "id": row[0],
+                "user_id": row[1],
+                "title": row[2],
+                "description": row[3],
+                "content": row[4],
+                "source_items": row[5],
+                "ai_provider": row[6],
+                "ai_model": row[7],
+                "credits_used": row[8] or 0.0,
+                "status": row[9],
+                "is_public": row[10],
+                "tags": row[11],
+                "transcription_id": row[12],
+                "created_at": row[13],
+                "updated_at": row[14],
+                # PKB fields - not available without migration
+                "pkb_enabled": None,
+                "pkb_status": None,
+                "pkb_collection_name": None,
+                "pkb_chunk_count": None,
+                "pkb_embedding_model": None,
+                "pkb_created_at": None,
+                "pkb_credits_used": None,
+                "pkb_error_message": None,
+            }
+            sources.append(source_dict)
         
         logger.info(f"📋 User {current_user.username} fetched {len(sources)} sources")
-        return refreshed_sources
+        return sources
     except Exception as e:
         logger.error(f"❌ Error fetching sources: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -205,7 +292,7 @@ async def get_user_sources(
         )
 
 
-@router.get("/{source_id}", response_model=SourceResponse)
+@router.get("/{source_id}")
 async def get_source(
     source_id: int,
     db: Session = Depends(get_db),
@@ -214,21 +301,57 @@ async def get_source(
     """
     Get a specific Source by ID
     """
-    source = db.query(Source).filter(
-        Source.id == source_id,
-        Source.user_id == current_user.id
-    ).first()
+    from sqlalchemy import text
     
-    if not source:
+    # Use raw SQL to avoid SQLAlchemy trying to access PKB columns
+    sql = text("""
+        SELECT id, user_id, title, description, content, source_items,
+               ai_provider, ai_model, credits_used, status, is_public,
+               tags, transcription_id, created_at, updated_at
+        FROM sources
+        WHERE id = :source_id AND user_id = :user_id
+    """)
+    
+    result = db.execute(sql, {
+        "source_id": source_id,
+        "user_id": current_user.id
+    })
+    
+    row = result.fetchone()
+    if not row:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Source not found"
         )
     
-    # Refresh presigned URLs for image items
-    source = refresh_source_image_urls(source)
+    source_dict = {
+        "id": row[0],
+        "user_id": row[1],
+        "title": row[2],
+        "description": row[3],
+        "content": row[4],
+        "source_items": row[5],
+        "ai_provider": row[6],
+        "ai_model": row[7],
+        "credits_used": row[8] or 0.0,
+        "status": row[9],
+        "is_public": row[10],
+        "tags": row[11],
+        "transcription_id": row[12],
+        "created_at": row[13],
+        "updated_at": row[14],
+        # PKB fields - not available without migration
+        "pkb_enabled": None,
+        "pkb_status": None,
+        "pkb_collection_name": None,
+        "pkb_chunk_count": None,
+        "pkb_embedding_model": None,
+        "pkb_created_at": None,
+        "pkb_credits_used": None,
+        "pkb_error_message": None,
+    }
     
-    return source
+    return source_dict
 
 
 @router.post("/execute", response_model=SourceResponse)
