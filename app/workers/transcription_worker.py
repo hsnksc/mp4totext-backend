@@ -1499,17 +1499,17 @@ def generate_transcript_images(
         
         try:
             credits_service = get_credit_service(db)
-            # Model-based credit pricing (%50 kar marjlı - Aralık 2025)
-            # SDXL: $0.01-0.02 × 1.5 ÷ $0.02 = 0.75-1.5 kredi
-            # FLUX: $0.03-0.055 × 1.5 ÷ $0.02 = 2.25-4.13 kredi
-            # IMAGEN: $0.04-0.08 × 1.5 ÷ $0.02 = 3.0-6.0 kredi
+            # Model-based credit pricing (%75 kar marjlı - Aralık 2025)
+            # SDXL: $0.015 × 1.75 ÷ $0.02 = 1.31 kredi
+            # FLUX: $0.04 × 1.75 ÷ $0.02 = 3.50 kredi
+            # IMAGEN: $0.06 × 1.75 ÷ $0.02 = 5.25 kredi
             credit_multipliers = {
-                "sdxl": 1.0,      # Ortalama 1.0 kredi/görsel (eski: 1.0)
-                "flux": 3.0,      # Ortalama 3.0 kredi/görsel (eski: 2.0)
-                "imagen": 4.5     # Ortalama 4.5 kredi/görsel (eski: 4.0)
+                "sdxl": 1.31,     # 1.31 kredi/görsel (%75 kar marjı)
+                "flux": 3.50,     # 3.50 kredi/görsel (%75 kar marjı)
+                "imagen": 5.25    # 5.25 kredi/görsel (%75 kar marjı)
             }
             model_lower = model_type.lower()
-            credit_per_image = credit_multipliers.get(model_lower, 1.0)
+            credit_per_image = credit_multipliers.get(model_lower, 1.31)
             required_credits = float(num_images) * credit_per_image
             
             credits_service.deduct_credits(
@@ -1646,18 +1646,18 @@ def generate_video_task(
             estimated_segments = max(1, min(estimated_segments, 20))  # Cap between 1-20
             logger.info(f"📊 Transcript: {words} words → ~{estimated_segments} segments")
         
-        # Calculate required credits (%50 kar marjlı - Aralık 2025)
-        # Yeni Formül: Base(7.5) + (Segment × Görsel Fiyatı) + TTS maliyeti
+        # Calculate required credits (%75 kar marjlı - Aralık 2025)
+        # Yeni Formül: Base(8.75) + (Segment × Görsel Fiyatı) + TTS maliyeti
         model_lower = model_type.lower()
         credit_multipliers = {
-            "sdxl": 0.75,     # 0.75 kredi/segment (eski: 1.0)
-            "flux": 2.25,     # 2.25 kredi/segment (eski: 2.0)
-            "imagen": 3.0     # 3.0 kredi/segment (eski: 4.0)
+            "sdxl": 1.31,     # 1.31 kredi/segment (%75 kar marjı)
+            "flux": 3.50,     # 3.50 kredi/segment (%75 kar marjı)
+            "imagen": 5.25    # 5.25 kredi/segment (%75 kar marjı)
         }
-        base_video_cost = 7.5  # Sabit başlangıç ücreti (eski: 20)
-        tts_cost_per_minute = 1.13  # TTS maliyeti/dk (eski: 0.5)
+        base_video_cost = 8.75  # Sabit başlangıç ücreti (%75 kar marjı)
+        tts_cost_per_minute = 1.31  # TTS maliyeti/dk (%75 kar marjı)
         
-        image_credit_per_segment = credit_multipliers.get(model_lower, 0.75)
+        image_credit_per_segment = credit_multipliers.get(model_lower, 1.31)
         # Tahmini video süresi: segment başına ~30 saniye = 0.5 dk
         estimated_duration_minutes = estimated_segments * 0.5
         estimated_cost = base_video_cost + (image_credit_per_segment * estimated_segments) + (tts_cost_per_minute * estimated_duration_minutes)
