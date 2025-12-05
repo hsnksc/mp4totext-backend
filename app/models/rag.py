@@ -133,10 +133,11 @@ class PKBChunk(Base):
     # İlişkiler
     source = relationship("Source", back_populates="pkb_chunks")
     
-    # Indexler
+    # Indexler - extend_existing yukarıda tanımlandı, burada sadece Index'ler
     __table_args__ = (
         Index('idx_pkb_chunks_source', 'source_id'),
         Index('idx_pkb_chunks_embedded', 'source_id', 'is_embedded'),
+        {'extend_existing': True}
     )
     
     def __repr__(self):
@@ -192,6 +193,7 @@ class PKBChatSession(Base):
     __table_args__ = (
         Index('idx_pkb_sessions_source', 'source_id', 'status'),
         Index('idx_pkb_sessions_user', 'user_id', 'status'),
+        {'extend_existing': True}
     )
     
     def __repr__(self):
@@ -230,8 +232,8 @@ class PKBChatMessage(Base):
     # İşlem süresi
     processing_time_ms = Column(Integer, nullable=True)
     
-    # Metadata
-    metadata = Column(JSON, nullable=True)
+    # Message metadata (not 'metadata' - reserved in SQLAlchemy)
+    message_metadata = Column(JSON, nullable=True)
     
     # Zaman damgaları
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -242,6 +244,7 @@ class PKBChatMessage(Base):
     # Indexler
     __table_args__ = (
         Index('idx_pkb_messages_session', 'session_id', 'created_at'),
+        {'extend_existing': True}
     )
     
     def __repr__(self):
