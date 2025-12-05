@@ -16,6 +16,7 @@ class Source(Base):
     - Edited by the user
     - Shared on river.gistify (future feature)
     - Exported in various formats
+    - PKB (Personal Knowledge Base) oluşturulabilir
     """
     __tablename__ = "sources"
 
@@ -54,6 +55,18 @@ class Source(Base):
     
     # Linked transcription (optional)
     transcription_id = Column(Integer, ForeignKey("transcriptions.id"), nullable=True)
+    
+    # PKB (Personal Knowledge Base) fields
+    pkb_enabled = Column(Boolean, default=False)
+    pkb_status = Column(String(50), default="not_created")  # not_created, processing, ready, error
+    pkb_collection_name = Column(String(255), nullable=True)  # Qdrant collection name
+    pkb_chunk_count = Column(Integer, default=0)
+    pkb_embedding_model = Column(String(100), nullable=True)
+    pkb_chunk_size = Column(Integer, nullable=True)
+    pkb_chunk_overlap = Column(Integer, nullable=True)
+    pkb_created_at = Column(DateTime, nullable=True)
+    pkb_credits_used = Column(Float, default=0.0)
+    pkb_error_message = Column(Text, nullable=True)
     
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)

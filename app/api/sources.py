@@ -6,7 +6,7 @@ import logging
 import re
 from datetime import datetime, timedelta
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
@@ -576,3 +576,377 @@ async def publish_source(
     logger.info(f"🌊 Source published: id={source.id}")
     
     return {"success": True, "message": "Source published", "source_id": source.id}
+
+
+# ============================================================================
+# PKB (Personal Knowledge Base) ENDPOINTS
+# ============================================================================
+
+class PKBCreateRequest(BaseModel):
+    embedding_model: str = "text-embedding-3-small"
+    chunk_size: int = 512
+    chunk_overlap: int = 50
+
+
+class PKBStatusResponse(BaseModel):
+    pkb_enabled: bool
+    pkb_status: str
+    chunk_count: int = 0
+    embedding_model: Optional[str] = None
+    credits_used: float = 0.0
+    error_message: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+@router.get("/{source_id}/pkb/status")
+async def get_pkb_status(
+    source_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Get PKB status for a source
+    """
+    source = db.query(Source).filter(
+        Source.id == source_id,
+        Source.user_id == current_user.id
+    ).first()
+    
+    if not source:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source not found"
+        )
+    
+    return {
+        "pkb_enabled": source.pkb_enabled or False,
+        "pkb_status": source.pkb_status or "not_created",
+        "chunk_count": source.pkb_chunk_count or 0,
+        "embedding_model": source.pkb_embedding_model,
+        "credits_used": source.pkb_credits_used or 0.0,
+        "error_message": source.pkb_error_message,
+        "created_at": source.pkb_created_at.isoformat() if source.pkb_created_at else None
+    }
+
+
+@router.post("/{source_id}/pkb/create")
+async def create_pkb(
+    source_id: int,
+    request: PKBCreateRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Create PKB (Personal Knowledge Base) for a source
+    """
+    from app.services.rag_service import TextChunker, EmbeddingService, VectorStoreService
+    from app.settings import get_settings
+    import uuid
+    
+    settings = get_settings()
+    
+    source = db.query(Source).filter(
+        Source.id == source_id,
+        Source.user_id == current_user.id
+    ).first()
+    
+    if not source:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source not found"
+        )
+    
+    # Check if already has PKB
+    if source.pkb_enabled and source.pkb_status == "ready":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="PKB already exists for this source"
+        )
+    
+    # Check content
+    if not source.content or len(source.content.strip()) < 100:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Source content too short for PKB (minimum 100 characters)"
+        )
+    
+    # Calculate credits (estimate)
+    content_length = len(source.content)
+    estimated_chunks = content_length // request.chunk_size + 1
+    credits_needed = estimated_chunks * 0.001  # 0.001 credits per chunk
+    
+    # Check credits
+    if current_user.credits < credits_needed:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"Insufficient credits. Need {credits_needed:.3f}, have {current_user.credits:.3f}"
+        )
+    
+    # Update source status
+    collection_name = f"source_{source_id}_{uuid.uuid4().hex[:8]}"
+    source.pkb_status = "processing"
+    source.pkb_collection_name = collection_name
+    source.pkb_embedding_model = request.embedding_model
+    source.pkb_chunk_size = request.chunk_size
+    source.pkb_chunk_overlap = request.chunk_overlap
+    source.updated_at = datetime.utcnow()
+    db.commit()
+    
+    # Start background task
+    background_tasks.add_task(
+        process_pkb_creation,
+        source_id=source_id,
+        user_id=current_user.id,
+        content=source.content,
+        collection_name=collection_name,
+        embedding_model=request.embedding_model,
+        chunk_size=request.chunk_size,
+        chunk_overlap=request.chunk_overlap
+    )
+    
+    logger.info(f"🚀 PKB creation started for source {source_id}")
+    
+    return {
+        "success": True,
+        "message": "PKB creation started",
+        "source_id": source_id,
+        "status": "processing"
+    }
+
+
+async def process_pkb_creation(
+    source_id: int,
+    user_id: int,
+    content: str,
+    collection_name: str,
+    embedding_model: str,
+    chunk_size: int,
+    chunk_overlap: int
+):
+    """
+    Background task to create PKB
+    """
+    from app.database import SessionLocal
+    from app.services.rag_service import TextChunker, EmbeddingService, VectorStoreService
+    from app.services.credit_service import get_credit_service
+    
+    db = SessionLocal()
+    
+    try:
+        source = db.query(Source).filter(Source.id == source_id).first()
+        if not source:
+            logger.error(f"❌ Source {source_id} not found")
+            return
+        
+        # Chunk the content
+        chunker = TextChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        chunks = chunker.chunk_text(content)
+        
+        logger.info(f"📦 Created {len(chunks)} chunks for source {source_id}")
+        
+        # Get embeddings
+        embedding_service = EmbeddingService()
+        embeddings = await embedding_service.get_embeddings(
+            texts=chunks,
+            model=embedding_model
+        )
+        
+        logger.info(f"🔢 Generated {len(embeddings)} embeddings")
+        
+        # Store in vector database
+        vector_store = VectorStoreService()
+        await vector_store.create_collection(collection_name, dimension=len(embeddings[0]))
+        await vector_store.upsert_vectors(
+            collection_name=collection_name,
+            vectors=embeddings,
+            texts=chunks,
+            metadata=[{"source_id": source_id, "chunk_idx": i} for i in range(len(chunks))]
+        )
+        
+        logger.info(f"💾 Stored vectors in collection {collection_name}")
+        
+        # Calculate and deduct credits
+        credits_used = len(chunks) * 0.001
+        credit_service = get_credit_service(db)
+        credit_service.deduct_credits(
+            user_id=user_id,
+            amount=credits_used,
+            operation_type=OperationType.RAG_PKB_CREATION,
+            description=f"PKB created for source: {source.title[:50]}",
+            metadata={"source_id": source_id, "chunk_count": len(chunks)}
+        )
+        
+        # Update source
+        source.pkb_enabled = True
+        source.pkb_status = "ready"
+        source.pkb_chunk_count = len(chunks)
+        source.pkb_credits_used = credits_used
+        source.pkb_created_at = datetime.utcnow()
+        source.pkb_error_message = None
+        source.updated_at = datetime.utcnow()
+        db.commit()
+        
+        logger.info(f"✅ PKB created for source {source_id}: {len(chunks)} chunks, {credits_used:.4f} credits")
+        
+    except Exception as e:
+        logger.error(f"❌ PKB creation failed for source {source_id}: {e}")
+        source = db.query(Source).filter(Source.id == source_id).first()
+        if source:
+            source.pkb_status = "error"
+            source.pkb_error_message = str(e)
+            source.updated_at = datetime.utcnow()
+            db.commit()
+    finally:
+        db.close()
+
+
+@router.delete("/{source_id}/pkb")
+async def delete_pkb(
+    source_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Delete PKB for a source
+    """
+    from app.services.rag_service import VectorStoreService
+    
+    source = db.query(Source).filter(
+        Source.id == source_id,
+        Source.user_id == current_user.id
+    ).first()
+    
+    if not source:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source not found"
+        )
+    
+    if not source.pkb_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No PKB exists for this source"
+        )
+    
+    # Delete collection from vector store
+    if source.pkb_collection_name:
+        try:
+            vector_store = VectorStoreService()
+            await vector_store.delete_collection(source.pkb_collection_name)
+            logger.info(f"🗑️ Deleted collection {source.pkb_collection_name}")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to delete collection: {e}")
+    
+    # Reset PKB fields
+    source.pkb_enabled = False
+    source.pkb_status = "not_created"
+    source.pkb_collection_name = None
+    source.pkb_chunk_count = 0
+    source.pkb_created_at = None
+    source.pkb_error_message = None
+    source.updated_at = datetime.utcnow()
+    db.commit()
+    
+    logger.info(f"🗑️ PKB deleted for source {source_id}")
+    
+    return {"success": True, "message": "PKB deleted"}
+
+
+@router.post("/{source_id}/pkb/chat")
+async def chat_with_pkb(
+    source_id: int,
+    request: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Chat with source PKB using RAG
+    """
+    from app.services.rag_service import VectorStoreService, EmbeddingService, LLMService
+    from app.services.credit_service import get_credit_service
+    
+    source = db.query(Source).filter(
+        Source.id == source_id,
+        Source.user_id == current_user.id
+    ).first()
+    
+    if not source:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source not found"
+        )
+    
+    if not source.pkb_enabled or source.pkb_status != "ready":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="PKB not ready for this source"
+        )
+    
+    message = request.get("message", "").strip()
+    llm_model = request.get("llm_model", "gpt-4o-mini")
+    
+    if not message:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Message is required"
+        )
+    
+    # Check credits
+    credits_needed = 0.01  # Base cost per chat
+    if current_user.credits < credits_needed:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"Insufficient credits"
+        )
+    
+    try:
+        # Get query embedding
+        embedding_service = EmbeddingService()
+        query_embedding = await embedding_service.get_embeddings(
+            texts=[message],
+            model=source.pkb_embedding_model or "text-embedding-3-small"
+        )
+        
+        # Search vector store
+        vector_store = VectorStoreService()
+        results = await vector_store.search(
+            collection_name=source.pkb_collection_name,
+            query_vector=query_embedding[0],
+            limit=5
+        )
+        
+        # Build context
+        context_chunks = [r["text"] for r in results]
+        context = "\n\n---\n\n".join(context_chunks)
+        
+        # Generate response with LLM
+        llm_service = LLMService()
+        response = await llm_service.generate_rag_response(
+            query=message,
+            context=context,
+            model=llm_model
+        )
+        
+        # Deduct credits
+        credit_service = get_credit_service(db)
+        credit_service.deduct_credits(
+            user_id=current_user.id,
+            amount=credits_needed,
+            operation_type=OperationType.RAG_CHAT,
+            description=f"PKB chat: {message[:50]}",
+            metadata={"source_id": source_id, "llm_model": llm_model}
+        )
+        
+        return {
+            "response": response,
+            "sources_used": [{"content_preview": c[:100], "score": r.get("score", 0)} for c, r in zip(context_chunks, results)],
+            "credits_used": credits_needed
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ PKB chat failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Chat failed: {str(e)}"
+        )

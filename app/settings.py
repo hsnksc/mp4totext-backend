@@ -197,6 +197,20 @@ class Settings(BaseSettings):
     LOG_FILE: str = Field(default="logs/app.log", env="LOG_FILE")
     
     # =============================================================================
+    # QDRANT VECTOR DATABASE (RAG+PKB)
+    # =============================================================================
+    QDRANT_URL: str = Field(default="http://localhost:6333", env="QDRANT_URL")
+    QDRANT_API_KEY: Optional[str] = Field(default=None, env="QDRANT_API_KEY")
+    QDRANT_COLLECTION_PREFIX: str = Field(default="gistify", env="QDRANT_COLLECTION_PREFIX")
+    
+    # RAG Settings
+    RAG_DEFAULT_EMBEDDING_MODEL: str = Field(default="text-embedding-3-small", env="RAG_DEFAULT_EMBEDDING_MODEL")
+    RAG_DEFAULT_LLM_MODEL: str = Field(default="gpt-4o-mini", env="RAG_DEFAULT_LLM_MODEL")
+    RAG_DEFAULT_CHUNK_SIZE: int = Field(default=512, env="RAG_DEFAULT_CHUNK_SIZE")
+    RAG_DEFAULT_CHUNK_OVERLAP: int = Field(default=50, env="RAG_DEFAULT_CHUNK_OVERLAP")
+    RAG_DEFAULT_TOP_K: int = Field(default=5, env="RAG_DEFAULT_TOP_K")
+    
+    # =============================================================================
     # MONITORING
     # =============================================================================
     SENTRY_DSN: Optional[str] = Field(default=None, env="SENTRY_DSN")
