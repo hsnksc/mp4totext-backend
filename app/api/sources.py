@@ -811,11 +811,35 @@ async def create_pkb(
     
     # Lazy import - will fail gracefully if rag_service has issues
     try:
-        from app.services.rag_service import TextChunker, EmbeddingService, VectorStoreService
+        # Try imports one by one to identify which one fails
+        logger.info("🔍 Attempting to import rag_service components...")
+        
+        try:
+            from app.services.rag_service import TextChunker
+            logger.info("✅ TextChunker imported successfully")
+        except Exception as e1:
+            logger.error(f"❌ TextChunker import failed: {type(e1).__name__}: {e1}")
+            raise
+        
+        try:
+            from app.services.rag_service import EmbeddingService
+            logger.info("✅ EmbeddingService imported successfully")
+        except Exception as e2:
+            logger.error(f"❌ EmbeddingService import failed: {type(e2).__name__}: {e2}")
+            raise
+        
+        try:
+            from app.services.rag_service import VectorStoreService
+            logger.info("✅ VectorStoreService imported successfully")
+        except Exception as e3:
+            logger.error(f"❌ VectorStoreService import failed: {type(e3).__name__}: {e3}")
+            raise
+            
     except Exception as e:
         logger.error(f"❌ Failed to import rag_service: {type(e).__name__}: {e}")
         import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        tb = traceback.format_exc()
+        logger.error(f"Traceback: {tb}")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Knowledge Base service is not available: {type(e).__name__}: {str(e)}"
