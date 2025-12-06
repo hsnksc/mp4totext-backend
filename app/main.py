@@ -371,9 +371,31 @@ async def api_status() -> Dict[str, Any]:
     Detaylı sistem durumu bilgisi - Database, Redis, Celery worker kontrolü
     """
     from app.celery_config import celery_app
+    import os
+    import time
     
     # Check database
     db_status = "operational" if check_db_connection() else "error"
+    
+    # Check Qdrant connectivity
+    qdrant_status = "unknown"
+    qdrant_time_ms = 0
+    qdrant_url = os.environ.get("QDRANT_URL", "not_set")
+    try:
+        import httpx
+        start = time.time()
+        response = httpx.get(
+            f"{qdrant_url}/collections",
+            headers={"api-key": os.environ.get("QDRANT_API_KEY", "")},
+            timeout=10.0
+        )
+        qdrant_time_ms = int((time.time() - start) * 1000)
+        if response.status_code == 200:
+            qdrant_status = "operational"
+        else:
+            qdrant_status = f"error: {response.status_code}"
+    except Exception as e:
+        qdrant_status = f"error: {str(e)[:100]}"
     
     # Check Celery worker
     celery_status = "error"
@@ -408,6 +430,11 @@ async def api_status() -> Dict[str, Any]:
         },
         "services": {
             "database": db_status,
+            "qdrant": {
+                "status": qdrant_status,
+                "url": qdrant_url,
+                "response_time_ms": qdrant_time_ms
+            },
             "celery": {
                 "status": celery_status,
                 "workers": celery_workers,
