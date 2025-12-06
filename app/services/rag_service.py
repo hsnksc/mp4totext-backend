@@ -462,7 +462,9 @@ class VectorStoreService:
             settings = _get_settings()
             self.client = QdrantClient(
                 url=settings.QDRANT_URL,
-                api_key=settings.QDRANT_API_KEY if settings.QDRANT_API_KEY else None
+                api_key=settings.QDRANT_API_KEY if settings.QDRANT_API_KEY else None,
+                timeout=60,  # 60 second timeout for operations
+                prefer_grpc=False  # Use HTTP for better compatibility
             )
             logger.info(f"✅ Qdrant connected: {settings.QDRANT_URL}")
         except ImportError:
