@@ -1032,12 +1032,13 @@ async def process_pkb_creation(
         # Calculate and deduct credits
         credits_used = len(chunk_texts) * 0.001
         credit_service = get_credit_service(db)
+        # Use AI_ENHANCEMENT temporarily until rag_pkb_creation is added to PostgreSQL enum
         credit_service.deduct_credits(
             user_id=user_id,
             amount=credits_used,
-            operation_type=OperationType.RAG_PKB_CREATION,
+            operation_type=OperationType.AI_ENHANCEMENT,  # TODO: Change to RAG_PKB_CREATION after enum migration
             description=f"PKB created for source: {source.title[:50]}",
-            metadata={"source_id": source_id, "chunk_count": len(chunk_texts)}
+            metadata={"source_id": source_id, "chunk_count": len(chunk_texts), "type": "rag_pkb_creation"}
         )
         
         # Update source
