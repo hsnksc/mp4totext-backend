@@ -327,6 +327,23 @@ async def run_pkb_migration():
             logger.info(f"✅ PKB migration complete! Added columns: {added}")
         else:
             logger.info("✅ PKB columns already exist")
+        
+        # Add RAG_PKB_CREATION to operationtype enum if not exists
+        try:
+            # Check if enum value exists
+            result = conn.execute(text("""
+                SELECT 1 FROM pg_enum 
+                WHERE enumlabel = 'rag_pkb_creation' 
+                AND enumtypid = (SELECT oid FROM pg_type WHERE typname = 'operationtype')
+            """))
+            if not result.fetchone():
+                conn.execute(text("ALTER TYPE operationtype ADD VALUE IF NOT EXISTS 'rag_pkb_creation'"))
+                conn.commit()
+                logger.info("✅ Added 'rag_pkb_creation' to operationtype enum")
+            else:
+                logger.info("✅ operationtype enum already has 'rag_pkb_creation'")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not add enum value: {e}")
 
 
 @app.on_event("shutdown")
