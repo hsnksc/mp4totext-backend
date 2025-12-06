@@ -1238,12 +1238,13 @@ async def chat_with_pkb(
         
         # Deduct credits
         credit_service = get_credit_service(db)
+        # Use AI_ENHANCEMENT temporarily until rag_chat is added to PostgreSQL enum
         credit_service.deduct_credits(
             user_id=current_user.id,
             amount=credits_needed,
-            operation_type=OperationType.RAG_CHAT,
+            operation_type=OperationType.AI_ENHANCEMENT,  # TODO: Change to RAG_CHAT after enum migration
             description=f"PKB chat: {message[:50]}",
-            metadata={"source_id": source_id, "llm_model": llm_model}
+            metadata={"source_id": source_id, "llm_model": llm_model, "type": "rag_chat"}
         )
         
         return {
