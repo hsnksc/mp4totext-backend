@@ -1194,9 +1194,9 @@ async def chat_with_pkb(
             detail="Message is required"
         )
     
-    # Check credits
-    credits_needed = 0.01  # Base cost per chat
-    if current_user.credits < credits_needed:
+    # Minimum credit check (actual cost calculated after LLM call)
+    min_credits_needed = 0.005  # Minimum cost per chat
+    if current_user.credits < min_credits_needed:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=f"Insufficient credits"
@@ -1246,21 +1246,52 @@ async def chat_with_pkb(
             model=llm_model_enum
         )
         
+        # Calculate credits based on token usage
+        # Pricing: 
+        #   - Embedding: 0.001 credits per query
+        #   - GPT-4o-mini: $0.15/1M input, $0.60/1M output -> ~0.0001 per 1K tokens
+        #   - GPT-4o: $2.50/1M input, $10/1M output -> ~0.001 per 1K tokens
+        embedding_cost = 0.001  # Per query embedding
+        
+        if "mini" in llm_model.lower():
+            # GPT-4o-mini pricing (cheaper)
+            input_cost = (input_tokens / 1000) * 0.0002   # $0.15/1M = ~0.0002 per 1K
+            output_cost = (output_tokens / 1000) * 0.0008  # $0.60/1M = ~0.0008 per 1K
+        else:
+            # GPT-4o pricing (more expensive)
+            input_cost = (input_tokens / 1000) * 0.003    # $2.50/1M = ~0.003 per 1K
+            output_cost = (output_tokens / 1000) * 0.012  # $10/1M = ~0.012 per 1K
+        
+        credits_used = embedding_cost + input_cost + output_cost
+        credits_used = round(max(credits_used, 0.005), 4)  # Minimum 0.005, round to 4 decimals
+        
+        logger.info(f"💰 Chat cost breakdown: embedding={embedding_cost:.4f}, input={input_cost:.4f} ({input_tokens} tokens), output={output_cost:.4f} ({output_tokens} tokens), total={credits_used:.4f}")
+        
         # Deduct credits
         credit_service = get_credit_service(db)
         # Use AI_ENHANCEMENT temporarily until rag_chat is added to PostgreSQL enum
         credit_service.deduct_credits(
             user_id=current_user.id,
-            amount=credits_needed,
+            amount=credits_used,
             operation_type=OperationType.AI_ENHANCEMENT,  # TODO: Change to RAG_CHAT after enum migration
             description=f"PKB chat: {message[:50]}",
-            metadata={"source_id": source_id, "llm_model": llm_model, "type": "rag_chat"}
+            metadata={
+                "source_id": source_id, 
+                "llm_model": llm_model, 
+                "type": "rag_chat",
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens
+            }
         )
         
         return {
             "response": response_text,
             "sources_used": [{"content_preview": r.content[:100], "score": r.score} for r in results],
-            "credits_used": credits_needed
+            "credits_used": credits_used,
+            "token_usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens
+            }
         }
         
     except Exception as e:
