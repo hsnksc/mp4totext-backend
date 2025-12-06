@@ -983,53 +983,74 @@ async def process_pkb_creation(
         
         # Chunk the content
         chunker = TextChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
-        chunks = chunker.chunk_text(content)
+        chunk_results = chunker.chunk_text(content)
         
-        logger.info(f"📦 Created {len(chunks)} chunks for source {source_id}")
+        # Extract text from chunk results
+        chunk_texts = [chunk.content for chunk in chunk_results]
         
-        # Get embeddings
+        logger.info(f"📦 Created {len(chunk_texts)} chunks for source {source_id}")
+        
+        # Get embeddings (sync method, no await)
         embedding_service = EmbeddingService()
-        embeddings = await embedding_service.get_embeddings(
-            texts=chunks,
-            model=embedding_model
+        from app.services.rag_service import EmbeddingModel
+        embedding_results = embedding_service.get_embeddings_batch(
+            texts=chunk_texts,
+            model=EmbeddingModel.OPENAI_SMALL
         )
+        
+        # Extract embedding vectors
+        embeddings = [result.embedding for result in embedding_results]
         
         logger.info(f"🔢 Generated {len(embeddings)} embeddings")
         
-        # Store in vector database
+        # Store in vector database (sync methods)
         vector_store = VectorStoreService()
-        await vector_store.create_collection(collection_name, dimension=len(embeddings[0]))
-        await vector_store.upsert_vectors(
+        vector_store.create_collection(collection_name, dimensions=len(embeddings[0]))
+        
+        # Prepare points for Qdrant
+        import uuid
+        points = [
+            {
+                "id": str(uuid.uuid4()),
+                "vector": embeddings[i],
+                "payload": {
+                    "text": chunk_texts[i],
+                    "source_id": source_id,
+                    "chunk_idx": i
+                }
+            }
+            for i in range(len(chunk_texts))
+        ]
+        
+        vector_store.upsert_vectors(
             collection_name=collection_name,
-            vectors=embeddings,
-            texts=chunks,
-            metadata=[{"source_id": source_id, "chunk_idx": i} for i in range(len(chunks))]
+            points=points
         )
         
         logger.info(f"💾 Stored vectors in collection {collection_name}")
         
         # Calculate and deduct credits
-        credits_used = len(chunks) * 0.001
+        credits_used = len(chunk_texts) * 0.001
         credit_service = get_credit_service(db)
         credit_service.deduct_credits(
             user_id=user_id,
             amount=credits_used,
             operation_type=OperationType.RAG_PKB_CREATION,
             description=f"PKB created for source: {source.title[:50]}",
-            metadata={"source_id": source_id, "chunk_count": len(chunks)}
+            metadata={"source_id": source_id, "chunk_count": len(chunk_texts)}
         )
         
         # Update source
         source.pkb_enabled = True
         source.pkb_status = "ready"
-        source.pkb_chunk_count = len(chunks)
+        source.pkb_chunk_count = len(chunk_texts)
         source.pkb_credits_used = credits_used
         source.pkb_created_at = datetime.utcnow()
         source.pkb_error_message = None
         source.updated_at = datetime.utcnow()
         db.commit()
         
-        logger.info(f"✅ PKB created for source {source_id}: {len(chunks)} chunks, {credits_used:.4f} credits")
+        logger.info(f"✅ PKB created for source {source_id}: {len(chunk_texts)} chunks, {credits_used:.4f} credits")
         
     except Exception as e:
         logger.error(f"❌ PKB creation failed for source {source_id}: {e}")
@@ -1181,31 +1202,37 @@ async def chat_with_pkb(
         )
     
     try:
-        # Get query embedding
+        # Get query embedding (sync method)
         embedding_service = EmbeddingService()
-        query_embedding = await embedding_service.get_embeddings(
-            texts=[message],
-            model=pkb_embedding_model or "text-embedding-3-small"
+        from app.services.rag_service import EmbeddingModel
+        query_result = embedding_service.get_embedding(
+            text=message,
+            model=EmbeddingModel.OPENAI_SMALL
         )
+        query_vector = query_result.embedding
         
-        # Search vector store
+        # Search vector store (sync method)
         vector_store = VectorStoreService()
-        results = await vector_store.search(
+        results = vector_store.search(
             collection_name=pkb_collection_name,
-            query_vector=query_embedding[0],
-            limit=5
+            query_vector=query_vector,
+            top_k=5
         )
         
-        # Build context
-        context_chunks = [r["text"] for r in results]
+        # Build context from SearchResult objects
+        context_chunks = [r.content for r in results]
         context = "\n\n---\n\n".join(context_chunks)
         
-        # Generate response with LLM
+        # Generate response with LLM (sync method)
         llm_service = LLMService()
-        response = await llm_service.generate_rag_response(
-            query=message,
-            context=context,
-            model=llm_model
+        from app.services.rag_service import LLMModel
+        llm_model_enum = LLMModel.GPT4O_MINI if "mini" in llm_model.lower() else LLMModel.GPT4O
+        response_text, input_tokens, output_tokens = llm_service.generate_response(
+            messages=[
+                {"role": "system", "content": f"Answer the user's question based on the following context:\n\n{context}"},
+                {"role": "user", "content": message}
+            ],
+            model=llm_model_enum
         )
         
         # Deduct credits
@@ -1219,8 +1246,8 @@ async def chat_with_pkb(
         )
         
         return {
-            "response": response,
-            "sources_used": [{"content_preview": c[:100], "score": r.get("score", 0)} for c, r in zip(context_chunks, results)],
+            "response": response_text,
+            "sources_used": [{"content_preview": r.content[:100], "score": r.score} for r in results],
             "credits_used": credits_needed
         }
         
