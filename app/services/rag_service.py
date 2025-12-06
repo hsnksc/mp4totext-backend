@@ -454,25 +454,53 @@ class VectorStoreService:
         self._init_client()
     
     def _init_client(self):
-        """Qdrant client'ı başlat"""
+        """Qdrant client'ı başlat - REST API kullan"""
         try:
-            from qdrant_client import QdrantClient
-            from qdrant_client.http.models import Distance, VectorParams
-            
             settings = _get_settings()
-            self.client = QdrantClient(
-                url=settings.QDRANT_URL,
-                api_key=settings.QDRANT_API_KEY if settings.QDRANT_API_KEY else None,
-                timeout=60,  # 60 second timeout for operations
-                prefer_grpc=False  # Use HTTP for better compatibility
+            self.qdrant_url = settings.QDRANT_URL
+            self.qdrant_api_key = settings.QDRANT_API_KEY
+            
+            # Test connection with httpx
+            import httpx
+            response = httpx.get(
+                f"{self.qdrant_url}/collections",
+                headers={"api-key": self.qdrant_api_key} if self.qdrant_api_key else {},
+                timeout=30.0
             )
-            logger.info(f"✅ Qdrant connected: {settings.QDRANT_URL}")
-        except ImportError:
-            logger.warning("⚠️ qdrant-client not installed. Vector store disabled.")
-            self.client = None
+            if response.status_code == 200:
+                self.client = True  # Mark as connected
+                logger.info(f"✅ Qdrant connected via REST: {self.qdrant_url}")
+            else:
+                logger.error(f"❌ Qdrant connection failed: {response.status_code}")
+                self.client = None
         except Exception as e:
             logger.error(f"❌ Qdrant connection failed: {e}")
             self.client = None
+    
+    def _make_request(self, method: str, endpoint: str, json_data: dict = None) -> dict:
+        """Make HTTP request to Qdrant"""
+        import httpx
+        url = f"{self.qdrant_url}{endpoint}"
+        headers = {"Content-Type": "application/json"}
+        if self.qdrant_api_key:
+            headers["api-key"] = self.qdrant_api_key
+        
+        with httpx.Client(timeout=60.0) as client:
+            if method == "GET":
+                response = client.get(url, headers=headers)
+            elif method == "PUT":
+                response = client.put(url, headers=headers, json=json_data)
+            elif method == "POST":
+                response = client.post(url, headers=headers, json=json_data)
+            elif method == "DELETE":
+                response = client.delete(url, headers=headers)
+            else:
+                raise ValueError(f"Unsupported method: {method}")
+        
+        if response.status_code >= 400:
+            raise Exception(f"Qdrant API error: {response.status_code} - {response.text}")
+        
+        return response.json() if response.text else {}
     
     def create_collection(
         self,
@@ -480,26 +508,25 @@ class VectorStoreService:
         dimensions: int = 1536,
         distance: str = "Cosine"
     ) -> bool:
-        """Yeni koleksiyon oluştur"""
+        """Yeni koleksiyon oluştur - REST API"""
         if not self.client:
             return False
         
         try:
-            from qdrant_client.http.models import Distance, VectorParams
+            # Check if collection already exists
+            try:
+                self._make_request("GET", f"/collections/{collection_name}")
+                logger.info(f"ℹ️ Collection already exists: {collection_name}")
+                return True
+            except:
+                pass  # Collection doesn't exist, create it
             
-            dist_map = {
-                "Cosine": Distance.COSINE,
-                "Euclidean": Distance.EUCLID,
-                "Dot": Distance.DOT
-            }
-            
-            self.client.create_collection(
-                collection_name=collection_name,
-                vectors_config=VectorParams(
-                    size=dimensions,
-                    distance=dist_map.get(distance, Distance.COSINE)
-                )
-            )
+            self._make_request("PUT", f"/collections/{collection_name}", {
+                "vectors": {
+                    "size": dimensions,
+                    "distance": distance
+                }
+            })
             logger.info(f"✅ Collection created: {collection_name}")
             return True
         except Exception as e:
@@ -510,12 +537,12 @@ class VectorStoreService:
             raise e
     
     def delete_collection(self, collection_name: str) -> bool:
-        """Koleksiyon sil"""
+        """Koleksiyon sil - REST API"""
         if not self.client:
             return False
         
         try:
-            self.client.delete_collection(collection_name=collection_name)
+            self._make_request("DELETE", f"/collections/{collection_name}")
             logger.info(f"✅ Collection deleted: {collection_name}")
             return True
         except Exception as e:
@@ -527,26 +554,24 @@ class VectorStoreService:
         collection_name: str,
         points: List[Dict[str, Any]]
     ) -> bool:
-        """Vektörleri ekle/güncelle"""
+        """Vektörleri ekle/güncelle - REST API"""
         if not self.client:
             return False
         
         try:
-            from qdrant_client.http.models import PointStruct
-            
+            # Convert points to Qdrant format
             qdrant_points = [
-                PointStruct(
-                    id=p["id"],
-                    vector=p["vector"],
-                    payload=p.get("payload", {})
-                )
+                {
+                    "id": p["id"],
+                    "vector": p["vector"],
+                    "payload": p.get("payload", {})
+                }
                 for p in points
             ]
             
-            self.client.upsert(
-                collection_name=collection_name,
-                points=qdrant_points
-            )
+            self._make_request("PUT", f"/collections/{collection_name}/points", {
+                "points": qdrant_points
+            })
             logger.info(f"✅ Upserted {len(points)} vectors to {collection_name}")
             return True
         except Exception as e:
@@ -561,40 +586,35 @@ class VectorStoreService:
         score_threshold: float = 0.7,
         filter_conditions: Optional[Dict] = None
     ) -> List[SearchResult]:
-        """Vektör araması yap"""
+        """Vektör araması yap - REST API"""
         if not self.client:
             return []
         
         try:
-            from qdrant_client.http import models as qdrant_models
+            search_body = {
+                "vector": query_vector,
+                "limit": top_k,
+                "score_threshold": score_threshold,
+                "with_payload": True
+            }
             
-            # Filter oluştur
-            query_filter = None
             if filter_conditions:
-                must_conditions = []
-                for key, value in filter_conditions.items():
-                    must_conditions.append(
-                        qdrant_models.FieldCondition(
-                            key=key,
-                            match=qdrant_models.MatchValue(value=value)
-                        )
-                    )
-                query_filter = qdrant_models.Filter(must=must_conditions)
+                search_body["filter"] = {
+                    "must": [
+                        {"key": key, "match": {"value": value}}
+                        for key, value in filter_conditions.items()
+                    ]
+                }
             
-            results = self.client.search(
-                collection_name=collection_name,
-                query_vector=query_vector,
-                limit=top_k,
-                score_threshold=score_threshold,
-                query_filter=query_filter
-            )
+            response = self._make_request("POST", f"/collections/{collection_name}/points/search", search_body)
             
+            results = response.get("result", [])
             return [
                 SearchResult(
-                    chunk_id=str(r.id),
-                    content=r.payload.get("content", ""),
-                    score=r.score,
-                    metadata=r.payload
+                    chunk_id=str(r["id"]),
+                    content=r.get("payload", {}).get("text", r.get("payload", {}).get("content", "")),
+                    score=r.get("score", 0.0),
+                    metadata=r.get("payload", {})
                 )
                 for r in results
             ]
@@ -607,36 +627,32 @@ class VectorStoreService:
         collection_name: str,
         point_ids: List[str]
     ) -> bool:
-        """Point'leri sil"""
+        """Point'leri sil - REST API"""
         if not self.client:
             return False
         
         try:
-            from qdrant_client.http import models as qdrant_models
-            
-            self.client.delete(
-                collection_name=collection_name,
-                points_selector=qdrant_models.PointIdsList(
-                    points=point_ids
-                )
-            )
+            self._make_request("POST", f"/collections/{collection_name}/points/delete", {
+                "points": point_ids
+            })
             return True
         except Exception as e:
             logger.error(f"❌ Points deletion failed: {e}")
             return False
     
     def get_collection_info(self, collection_name: str) -> Optional[Dict[str, Any]]:
-        """Koleksiyon bilgilerini al"""
+        """Koleksiyon bilgilerini al - REST API"""
         if not self.client:
             return None
         
         try:
-            info = self.client.get_collection(collection_name=collection_name)
+            response = self._make_request("GET", f"/collections/{collection_name}")
+            result = response.get("result", {})
             return {
                 "name": collection_name,
-                "vectors_count": info.vectors_count,
-                "points_count": info.points_count,
-                "status": info.status.value
+                "vectors_count": result.get("vectors_count", 0),
+                "points_count": result.get("points_count", 0),
+                "status": result.get("status", "unknown")
             }
         except Exception as e:
             logger.error(f"❌ Get collection info failed: {e}")
