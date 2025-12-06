@@ -1211,18 +1211,28 @@ async def chat_with_pkb(
             model=EmbeddingModel.OPENAI_SMALL
         )
         query_vector = query_result.embedding
+        logger.info(f"🔍 Query embedding generated for: {message[:50]}...")
         
         # Search vector store (sync method)
         vector_store = VectorStoreService()
         results = vector_store.search(
             collection_name=pkb_collection_name,
             query_vector=query_vector,
-            top_k=5
+            top_k=5,
+            score_threshold=0.3  # Lower threshold for better recall
         )
+        
+        logger.info(f"📊 Vector search returned {len(results)} results for collection {pkb_collection_name}")
+        for i, r in enumerate(results):
+            logger.info(f"  Result {i+1}: score={r.score:.3f}, content_len={len(r.content)}")
         
         # Build context from SearchResult objects
         context_chunks = [r.content for r in results]
         context = "\n\n---\n\n".join(context_chunks)
+        
+        if not context.strip():
+            logger.warning(f"⚠️ No context found for query: {message[:50]}")
+            context = "No relevant context found in the knowledge base."
         
         # Generate response with LLM (sync method)
         llm_service = LLMService()
