@@ -252,6 +252,81 @@ async def startup_event():
             logger.warning("⚠️  Database connection failed")
     except Exception as e:
         logger.error(f"❌ Database initialization error: {e}")
+    
+    # Run PKB migration if needed
+    try:
+        await run_pkb_migration()
+    except Exception as e:
+        logger.warning(f"⚠️ PKB migration skipped: {e}")
+
+
+async def run_pkb_migration():
+    """Add PKB columns to sources table if they don't exist"""
+    import os
+    from sqlalchemy import create_engine, text
+    
+    database_url = os.environ.get("DATABASE_URL")
+    if not database_url:
+        logger.info("ℹ️ DATABASE_URL not set, skipping PKB migration")
+        return
+    
+    # Skip for SQLite (local dev)
+    if "sqlite" in database_url.lower():
+        logger.info("ℹ️ SQLite detected, skipping PKB migration (run add_source_pkb_fields.py manually)")
+        return
+    
+    logger.info("🔄 Running PKB migration for PostgreSQL...")
+    
+    pkb_fields = [
+        ("pkb_enabled", "BOOLEAN DEFAULT FALSE"),
+        ("pkb_status", "VARCHAR(50) DEFAULT 'not_created'"),
+        ("pkb_collection_name", "VARCHAR(255)"),
+        ("pkb_chunk_count", "INTEGER DEFAULT 0"),
+        ("pkb_embedding_model", "VARCHAR(100)"),
+        ("pkb_chunk_size", "INTEGER"),
+        ("pkb_chunk_overlap", "INTEGER"),
+        ("pkb_created_at", "TIMESTAMP"),
+        ("pkb_credits_used", "FLOAT DEFAULT 0.0"),
+        ("pkb_error_message", "TEXT"),
+    ]
+    
+    engine = create_engine(database_url)
+    
+    with engine.connect() as conn:
+        # Check if sources table exists
+        result = conn.execute(text("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'sources'
+            )
+        """))
+        if not result.scalar():
+            logger.info("ℹ️ sources table doesn't exist yet, skipping PKB migration")
+            return
+        
+        # Get existing columns
+        result = conn.execute(text("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'sources'
+        """))
+        existing_columns = {row[0] for row in result.fetchall()}
+        
+        added = []
+        for field_name, field_type in pkb_fields:
+            if field_name not in existing_columns:
+                try:
+                    conn.execute(text(f"ALTER TABLE sources ADD COLUMN {field_name} {field_type}"))
+                    added.append(field_name)
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not add {field_name}: {e}")
+        
+        conn.commit()
+        
+        if added:
+            logger.info(f"✅ PKB migration complete! Added columns: {added}")
+        else:
+            logger.info("✅ PKB columns already exist")
 
 
 @app.on_event("shutdown")
