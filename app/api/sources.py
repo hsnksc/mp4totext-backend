@@ -1300,3 +1300,408 @@ async def chat_with_pkb(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Chat failed: {str(e)}"
         )
+
+
+# ============================================================================
+# PKB SEMANTIC SEARCH
+# ============================================================================
+
+@router.post("/{source_id}/pkb/search")
+async def search_pkb(
+    source_id: int,
+    request: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Semantic search in PKB - find most relevant passages
+    """
+    from app.services.rag_service import VectorStoreService, EmbeddingService
+    from app.services.credit_service import get_credit_service
+    from sqlalchemy import text
+    
+    # Query PKB status
+    try:
+        sql = text("""
+            SELECT id, pkb_enabled, pkb_status, pkb_collection_name
+            FROM sources
+            WHERE id = :source_id AND user_id = :user_id
+        """)
+        result = db.execute(sql, {"source_id": source_id, "user_id": current_user.id})
+        row = result.fetchone()
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="PKB feature requires database migration"
+        )
+    
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source not found")
+    
+    source_id_db, pkb_enabled, pkb_status, pkb_collection_name = row
+    
+    if not pkb_enabled or pkb_status != "ready":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="PKB not ready")
+    
+    query = request.get("query", "").strip()
+    top_k = min(request.get("top_k", 10), 50)  # Max 50 results
+    score_threshold = request.get("score_threshold", 0.3)
+    
+    if not query:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Query is required")
+    
+    # Credit check (search is cheap - only embedding cost)
+    credits_needed = 0.002
+    if current_user.credits < credits_needed:
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="Insufficient credits")
+    
+    try:
+        # Get query embedding
+        embedding_service = EmbeddingService()
+        from app.services.rag_service import EmbeddingModel
+        query_result = embedding_service.get_embedding(text=query, model=EmbeddingModel.OPENAI_SMALL)
+        query_vector = query_result.embedding
+        
+        # Search vector store
+        vector_store = VectorStoreService()
+        results = vector_store.search(
+            collection_name=pkb_collection_name,
+            query_vector=query_vector,
+            top_k=top_k,
+            score_threshold=score_threshold
+        )
+        
+        logger.info(f"🔍 Search returned {len(results)} results for: {query[:50]}...")
+        
+        # Deduct credits
+        credit_service = get_credit_service(db)
+        credit_service.deduct_credits(
+            user_id=current_user.id,
+            amount=credits_needed,
+            operation_type=OperationType.AI_ENHANCEMENT,
+            description=f"PKB search: {query[:50]}",
+            metadata={"source_id": source_id, "type": "rag_search", "results_count": len(results)}
+        )
+        
+        return {
+            "results": [
+                {
+                    "content": r.content,
+                    "score": round(r.score, 4),
+                    "metadata": r.metadata
+                }
+                for r in results
+            ],
+            "total_results": len(results),
+            "credits_used": credits_needed
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ PKB search failed: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Search failed: {str(e)}")
+
+
+# ============================================================================
+# PKB SUMMARIZE
+# ============================================================================
+
+@router.post("/{source_id}/pkb/summarize")
+async def summarize_pkb(
+    source_id: int,
+    request: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Generate summary of PKB content
+    Styles: bullet_points, paragraph, executive, detailed
+    """
+    from app.services.rag_service import VectorStoreService, LLMService
+    from app.services.credit_service import get_credit_service
+    from sqlalchemy import text
+    
+    # Query PKB status
+    try:
+        sql = text("""
+            SELECT id, title, pkb_enabled, pkb_status, pkb_collection_name, pkb_chunk_count
+            FROM sources
+            WHERE id = :source_id AND user_id = :user_id
+        """)
+        result = db.execute(sql, {"source_id": source_id, "user_id": current_user.id})
+        row = result.fetchone()
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="PKB migration required")
+    
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source not found")
+    
+    source_id_db, title, pkb_enabled, pkb_status, pkb_collection_name, chunk_count = row
+    
+    if not pkb_enabled or pkb_status != "ready":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="PKB not ready")
+    
+    style = request.get("style", "paragraph")  # bullet_points, paragraph, executive, detailed
+    llm_model = request.get("llm_model", "gpt-4o-mini")
+    max_chunks = min(request.get("max_chunks", 20), 50)  # Limit chunks to process
+    
+    # Summarization costs more (uses LLM)
+    min_credits = 0.05
+    if current_user.credits < min_credits:
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="Insufficient credits")
+    
+    try:
+        # Get all chunks from PKB (or sample if too many)
+        vector_store = VectorStoreService()
+        all_points = vector_store.get_all_points(collection_name=pkb_collection_name, limit=max_chunks)
+        
+        if not all_points:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No content found in PKB")
+        
+        # Build content from chunks
+        content_parts = [p.get("content", "") for p in all_points if p.get("content")]
+        full_content = "\n\n".join(content_parts)
+        
+        # Truncate if too long (max ~12K tokens worth)
+        max_chars = 48000  # ~12K tokens
+        if len(full_content) > max_chars:
+            full_content = full_content[:max_chars] + "\n\n[Content truncated...]"
+        
+        # Style-specific prompts
+        style_prompts = {
+            "bullet_points": "Create a comprehensive bullet-point summary. Use clear hierarchical structure with main points and sub-points.",
+            "paragraph": "Write a well-structured summary in paragraph form. Include all key information in a flowing narrative.",
+            "executive": "Create a concise executive summary (3-5 paragraphs). Focus on the most important insights and conclusions.",
+            "detailed": "Provide a detailed summary covering all major topics. Include specific examples and data points where available."
+        }
+        
+        system_prompt = f"""You are a professional summarizer. {style_prompts.get(style, style_prompts['paragraph'])}
+        
+The document is titled: "{title or 'Untitled'}"
+
+Summarize the following content:"""
+        
+        # Generate summary with LLM
+        llm_service = LLMService()
+        from app.services.rag_service import LLMModel
+        llm_model_enum = LLMModel.GPT4O_MINI if "mini" in llm_model.lower() else LLMModel.GPT4O
+        
+        summary, input_tokens, output_tokens = llm_service.generate_response(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": full_content}
+            ],
+            model=llm_model_enum
+        )
+        
+        # Calculate credits
+        if "mini" in llm_model.lower():
+            input_cost = (input_tokens / 1000) * 0.0002
+            output_cost = (output_tokens / 1000) * 0.0008
+        else:
+            input_cost = (input_tokens / 1000) * 0.003
+            output_cost = (output_tokens / 1000) * 0.012
+        
+        credits_used = round(max(input_cost + output_cost, 0.01), 4)
+        
+        logger.info(f"📝 Summarization: {len(content_parts)} chunks, {input_tokens}+{output_tokens} tokens, {credits_used} credits")
+        
+        # Deduct credits
+        credit_service = get_credit_service(db)
+        credit_service.deduct_credits(
+            user_id=current_user.id,
+            amount=credits_used,
+            operation_type=OperationType.AI_ENHANCEMENT,
+            description=f"PKB summarize: {title or 'Untitled'}",
+            metadata={"source_id": source_id, "type": "rag_summarize", "style": style, "chunks_used": len(content_parts)}
+        )
+        
+        return {
+            "summary": summary,
+            "style": style,
+            "chunks_processed": len(content_parts),
+            "credits_used": credits_used,
+            "token_usage": {"input_tokens": input_tokens, "output_tokens": output_tokens}
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ PKB summarize failed: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Summarization failed: {str(e)}")
+
+
+# ============================================================================
+# PKB GENERATE QUESTIONS
+# ============================================================================
+
+@router.post("/{source_id}/pkb/generate-questions")
+async def generate_questions_from_pkb(
+    source_id: int,
+    request: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Generate quiz/exam questions from PKB content
+    Types: multiple_choice, true_false, short_answer, essay, flashcard
+    """
+    from app.services.rag_service import VectorStoreService, LLMService
+    from app.services.credit_service import get_credit_service
+    from sqlalchemy import text
+    
+    # Query PKB status
+    try:
+        sql = text("""
+            SELECT id, title, pkb_enabled, pkb_status, pkb_collection_name
+            FROM sources
+            WHERE id = :source_id AND user_id = :user_id
+        """)
+        result = db.execute(sql, {"source_id": source_id, "user_id": current_user.id})
+        row = result.fetchone()
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="PKB migration required")
+    
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source not found")
+    
+    source_id_db, title, pkb_enabled, pkb_status, pkb_collection_name = row
+    
+    if not pkb_enabled or pkb_status != "ready":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="PKB not ready")
+    
+    # Parameters
+    question_count = min(request.get("count", 10), 30)  # Max 30 questions
+    question_type = request.get("type", "mixed")  # multiple_choice, true_false, short_answer, essay, flashcard, mixed
+    difficulty = request.get("difficulty", "medium")  # easy, medium, hard
+    language = request.get("language", "en")  # Output language
+    llm_model = request.get("llm_model", "gpt-4o-mini")
+    
+    # Credit check
+    min_credits = 0.05
+    if current_user.credits < min_credits:
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="Insufficient credits")
+    
+    try:
+        # Get content from PKB
+        vector_store = VectorStoreService()
+        all_points = vector_store.get_all_points(collection_name=pkb_collection_name, limit=30)
+        
+        if not all_points:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No content found in PKB")
+        
+        # Build content
+        content_parts = [p.get("content", "") for p in all_points if p.get("content")]
+        full_content = "\n\n".join(content_parts)
+        
+        # Truncate if needed
+        max_chars = 40000
+        if len(full_content) > max_chars:
+            full_content = full_content[:max_chars]
+        
+        # Question type instructions
+        type_instructions = {
+            "multiple_choice": "Generate multiple choice questions with 4 options (A, B, C, D). Mark the correct answer.",
+            "true_false": "Generate true/false statements. Indicate whether each is True or False.",
+            "short_answer": "Generate questions that require short (1-3 sentence) answers.",
+            "essay": "Generate essay questions that require detailed explanations.",
+            "flashcard": "Generate flashcard pairs with a term/question on one side and definition/answer on the other.",
+            "mixed": "Generate a mix of multiple choice, true/false, and short answer questions."
+        }
+        
+        difficulty_instructions = {
+            "easy": "Create basic recall questions testing fundamental concepts.",
+            "medium": "Create questions requiring understanding and application of concepts.",
+            "hard": "Create challenging questions requiring analysis and critical thinking."
+        }
+        
+        lang_map = {"en": "English", "tr": "Turkish", "de": "German", "fr": "French", "es": "Spanish"}
+        output_lang = lang_map.get(language, language)
+        
+        system_prompt = f"""You are an expert educator creating {question_type} questions.
+
+{type_instructions.get(question_type, type_instructions['mixed'])}
+{difficulty_instructions.get(difficulty, difficulty_instructions['medium'])}
+
+Generate exactly {question_count} questions in {output_lang}.
+
+The source material is titled: "{title or 'Untitled'}"
+
+Format your response as a JSON array with this structure:
+[
+  {{
+    "question": "The question text",
+    "type": "{question_type if question_type != 'mixed' else 'multiple_choice|true_false|short_answer'}",
+    "options": ["A) ...", "B) ...", "C) ...", "D) ..."],  // Only for multiple_choice
+    "answer": "The correct answer",
+    "explanation": "Brief explanation of why this is correct"
+  }}
+]
+
+Ensure questions cover different topics from the content."""
+
+        # Generate questions with LLM
+        llm_service = LLMService()
+        from app.services.rag_service import LLMModel
+        llm_model_enum = LLMModel.GPT4O_MINI if "mini" in llm_model.lower() else LLMModel.GPT4O
+        
+        response_text, input_tokens, output_tokens = llm_service.generate_response(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Generate questions from this content:\n\n{full_content}"}
+            ],
+            model=llm_model_enum
+        )
+        
+        # Parse JSON response
+        import json
+        try:
+            # Clean response - remove markdown code blocks if present
+            clean_response = response_text.strip()
+            if clean_response.startswith("```json"):
+                clean_response = clean_response[7:]
+            if clean_response.startswith("```"):
+                clean_response = clean_response[3:]
+            if clean_response.endswith("```"):
+                clean_response = clean_response[:-3]
+            
+            questions = json.loads(clean_response.strip())
+        except json.JSONDecodeError:
+            # If JSON parsing fails, return raw text
+            questions = [{"raw_response": response_text, "parse_error": True}]
+        
+        # Calculate credits
+        if "mini" in llm_model.lower():
+            input_cost = (input_tokens / 1000) * 0.0002
+            output_cost = (output_tokens / 1000) * 0.0008
+        else:
+            input_cost = (input_tokens / 1000) * 0.003
+            output_cost = (output_tokens / 1000) * 0.012
+        
+        credits_used = round(max(input_cost + output_cost, 0.01), 4)
+        
+        logger.info(f"❓ Generated {len(questions) if isinstance(questions, list) else 1} questions, {credits_used} credits")
+        
+        # Deduct credits
+        credit_service = get_credit_service(db)
+        credit_service.deduct_credits(
+            user_id=current_user.id,
+            amount=credits_used,
+            operation_type=OperationType.AI_ENHANCEMENT,
+            description=f"PKB questions: {title or 'Untitled'}",
+            metadata={"source_id": source_id, "type": "rag_questions", "question_type": question_type, "count": question_count}
+        )
+        
+        return {
+            "questions": questions,
+            "question_type": question_type,
+            "difficulty": difficulty,
+            "language": language,
+            "credits_used": credits_used,
+            "token_usage": {"input_tokens": input_tokens, "output_tokens": output_tokens}
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ PKB generate questions failed: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Question generation failed: {str(e)}")

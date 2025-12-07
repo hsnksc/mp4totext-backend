@@ -658,6 +658,46 @@ class VectorStoreService:
             logger.error(f"❌ Get collection info failed: {e}")
             return None
 
+    def get_all_points(
+        self,
+        collection_name: str,
+        limit: int = 100,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """
+        Koleksiyondaki tüm point'leri al - REST API
+        Summarization ve question generation için kullanılır
+        """
+        if not self.client:
+            return []
+        
+        try:
+            # Qdrant scroll API - get all points without vector search
+            response = self._make_request("POST", f"/collections/{collection_name}/points/scroll", {
+                "limit": limit,
+                "offset": offset,
+                "with_payload": True,
+                "with_vector": False  # Don't need vectors, just payload
+            })
+            
+            points = response.get("result", {}).get("points", [])
+            
+            result = []
+            for p in points:
+                payload = p.get("payload", {})
+                result.append({
+                    "id": str(p.get("id", "")),
+                    "content": payload.get("text", payload.get("content", "")),
+                    "metadata": payload
+                })
+            
+            logger.info(f"📄 Retrieved {len(result)} points from {collection_name}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Get all points failed: {e}")
+            return []
+
 
 # =========================================================================
 # LLM SERVICE
