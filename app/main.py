@@ -214,6 +214,7 @@ from app.api.images import router as images_router
 from app.api.videos import router as videos_router
 from app.api.sources import router as sources_router
 from app.api.pulse import router as pulse_router
+from app.api.portal import router as portal_router
 # Note: Chat endpoints will be added to sources_router later
 app.include_router(auth_router)
 app.include_router(transcription_router)
@@ -224,6 +225,7 @@ app.include_router(images_router)
 app.include_router(videos_router, prefix="/api/v1/videos", tags=["videos"])
 app.include_router(sources_router)
 app.include_router(pulse_router, prefix="/api/v1", tags=["pulse"])
+app.include_router(portal_router, tags=["portal"])
 
 
 # Public endpoint for legal content (no auth required)
