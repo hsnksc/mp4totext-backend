@@ -52,6 +52,12 @@ if [ -f "add_source_pkb_fields.py" ]; then
     python add_source_pkb_fields.py || echo "  ⚠️ PKB fields migration skipped"
 fi
 
+# Pulse platform migration
+if [ -f "add_pulse_platform.py" ]; then
+    echo "  → Running Pulse platform migration..."
+    python add_pulse_platform.py || echo "  ⚠️ Pulse migration skipped"
+fi
+
 echo "✅ Migrations complete!"
 
 # Start supervisor (FastAPI + Celery)
