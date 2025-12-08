@@ -59,7 +59,7 @@ GISTIFY_APPS = [
     AppInfo(
         id="notebook",
         name="Notebook",
-        description="AI-powered notes & knowledge base with RAG",
+        description="AI-powered transcription, notes & knowledge base",
         url="https://notebook.gistify.pro",
         icon="book-open",
         color="#10b981",
@@ -78,28 +78,6 @@ GISTIFY_APPS = [
         is_available=True,
         requires_credits=True,
         badge="NEW",
-    ),
-    AppInfo(
-        id="mp4totext",
-        name="MP4toText",
-        description="Transcribe audio & video with AI",
-        url="https://gistify.pro",
-        icon="mic",
-        color="#8b5cf6",
-        gradient="from-violet-500 to-purple-600",
-        is_available=True,
-        requires_credits=True,
-    ),
-    AppInfo(
-        id="mixup",
-        name="MixUp",
-        description="Creative content mixer & editor",
-        url="https://gistify.pro/mixup",
-        icon="layout",
-        color="#f59e0b",
-        gradient="from-amber-500 to-orange-600",
-        is_available=True,
-        requires_credits=True,
     ),
 ]
 
