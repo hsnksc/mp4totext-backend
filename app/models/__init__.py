@@ -12,6 +12,13 @@ from app.models.rag import (
     MessageRole, MessageType, ChatSessionStatus, DocumentType,
     SourceStatus, SourceType, SourceItemType
 )
+from app.models.pulse import (
+    Pulse, Follow, Circle, Hashtag, Resonance,
+    PulseComment, PulseNotification, PulseAIGeneration,
+    VibeCheck, PulseMessage,
+    # Enums
+    PulseVisibility, PulseStatus, ResonanceType, ContentType, AIGenerationType
+)
 
 __all__ = [
     "User", "Transcription", "GeneratedImage", "Source",
@@ -21,5 +28,11 @@ __all__ = [
     "RAGSourceChunk", "RAGChatSession", "RAGChatMessage",
     # Enums
     "MessageRole", "MessageType", "ChatSessionStatus", "DocumentType",
-    "SourceStatus", "SourceType", "SourceItemType"
+    "SourceStatus", "SourceType", "SourceItemType",
+    # Pulse Models
+    "Pulse", "Follow", "Circle", "Hashtag", "Resonance",
+    "PulseComment", "PulseNotification", "PulseAIGeneration",
+    "VibeCheck", "PulseMessage",
+    # Pulse Enums
+    "PulseVisibility", "PulseStatus", "ResonanceType", "ContentType", "AIGenerationType"
 ]
