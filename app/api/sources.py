@@ -1230,7 +1230,10 @@ async def chat_with_pkb(
         context_chunks = [r.content for r in results]
         context = "\n\n---\n\n".join(context_chunks)
         
-        if not context.strip():
+        # Check if we got meaningful context
+        no_context_found = not context.strip() or len(results) == 0
+        
+        if no_context_found:
             logger.warning(f"⚠️ No context found for query: {message[:50]}")
             context = "No relevant context found in the knowledge base."
         
@@ -1238,9 +1241,22 @@ async def chat_with_pkb(
         llm_service = LLMService()
         from app.services.rag_service import LLMModel
         llm_model_enum = LLMModel.GPT4O_MINI if "mini" in llm_model.lower() else LLMModel.GPT4O
+        
+        # Add special instruction if no context found
+        system_prompt = f"Answer the user's question based on the following context:\n\n{context}"
+        if no_context_found:
+            system_prompt = """You are a helpful assistant. The knowledge base search returned no relevant results.
+            
+Please respond with a helpful message explaining that:
+1. No relevant information was found in the knowledge base for this query
+2. This might happen if the PKB was just created and vector indexing is still in progress (takes 1-2 minutes)
+3. Suggest the user to wait a moment and try again, or rephrase their question
+
+Respond in the same language as the user's question."""
+        
         response_text, input_tokens, output_tokens = llm_service.generate_response(
             messages=[
-                {"role": "system", "content": f"Answer the user's question based on the following context:\n\n{context}"},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": message}
             ],
             model=llm_model_enum
@@ -1288,6 +1304,7 @@ async def chat_with_pkb(
             "response": response_text,
             "sources_used": [{"content_preview": r.content[:100], "score": r.score} for r in results],
             "credits_used": credits_used,
+            "no_context_warning": no_context_found,
             "token_usage": {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens
