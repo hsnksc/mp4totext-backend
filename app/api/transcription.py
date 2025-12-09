@@ -592,7 +592,10 @@ async def generate_lecture_notes(
         return TranscriptionResponse.from_orm(transcription)
         
     except Exception as e:
-        logger.error(f"Lecture notes generation failed: {str(e)}")
+        import traceback
+        error_traceback = traceback.format_exc()
+        logger.error(f"❌ Lecture notes generation failed: {str(e)}")
+        logger.error(f"📋 Traceback: {error_traceback}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate lecture notes: {str(e)}"
