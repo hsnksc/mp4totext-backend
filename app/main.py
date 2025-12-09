@@ -193,12 +193,26 @@ async def validation_exception_handler(
 # CORS MIDDLEWARE - MUST COME AFTER EXCEPTION HANDLERS
 # ============================================================================
 
-logger.info(f"🌐 Allowed CORS origins: ALL ORIGINS + localhost:5173")
+# Define allowed origins explicitly for credentials support
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://gistify.pro",
+    "https://notebook.gistify.pro",
+    "https://pulse.gistify.pro",
+    "https://api.gistify.pro",
+]
+
+logger.info(f"🌐 Allowed CORS origins: {ALLOWED_ORIGINS}")
 
 # Configure CORS (must be registered before routers)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
