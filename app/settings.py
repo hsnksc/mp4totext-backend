@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     REDIS_PASSWORD: Optional[str] = Field(default=None, env="REDIS_PASSWORD")
     
     # =============================================================================
+    # GOOGLE OAUTH
+    # =============================================================================
+    GOOGLE_CLIENT_ID: Optional[str] = Field(default=None, env="GOOGLE_CLIENT_ID")
+    GOOGLE_CLIENT_SECRET: Optional[str] = Field(default=None, env="GOOGLE_CLIENT_SECRET")
+    GOOGLE_REDIRECT_URI: str = Field(default="https://api.gistify.pro/api/auth/google/callback", env="GOOGLE_REDIRECT_URI")
+    
+    # =============================================================================
     # STORAGE (Cloudflare R2 / S3-compatible)
     # =============================================================================
     STORAGE_ACCOUNT_ID: str = Field(default="", env="STORAGE_ACCOUNT_ID")  # Cloudflare Account ID

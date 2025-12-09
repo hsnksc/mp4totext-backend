@@ -1,12 +1,15 @@
 """
 Authentication API endpoints
-Register, Login, User info
+Register, Login, User info, Google OAuth
 """
 
 from datetime import timedelta
-from typing import Any
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Any, Optional
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
+import httpx
+import secrets
 
 from app.database import get_db
 from app.models.user import User
@@ -18,8 +21,14 @@ from app.auth.utils import (
     get_current_active_user,
     ACCESS_TOKEN_EXPIRE_MINUTES
 )
+from app.settings import get_settings
+
+settings = get_settings()
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
+
+# Also create a router for /api/auth (without v1) for Google callback
+oauth_router = APIRouter(prefix="/api/auth", tags=["OAuth"])
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -147,3 +156,145 @@ async def require_superuser(
             detail="Not enough permissions. Admin access required."
         )
     return current_user
+
+
+# =============================================================================
+# GOOGLE OAUTH ENDPOINTS
+# =============================================================================
+
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
+
+
+@router.get("/google/login")
+async def google_login():
+    """
+    Redirect user to Google OAuth consent screen
+    """
+    if not settings.GOOGLE_CLIENT_ID:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Google OAuth is not configured"
+        )
+    
+    # Generate state for CSRF protection
+    state = secrets.token_urlsafe(32)
+    
+    params = {
+        "client_id": settings.GOOGLE_CLIENT_ID,
+        "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "access_type": "offline",
+        "prompt": "consent"
+    }
+    
+    query_string = "&".join([f"{k}={v}" for k, v in params.items()])
+    auth_url = f"{GOOGLE_AUTH_URL}?{query_string}"
+    
+    return {"auth_url": auth_url, "state": state}
+
+
+@oauth_router.get("/google/callback")
+async def google_callback(
+    code: str = Query(...),
+    state: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Handle Google OAuth callback
+    Exchange code for tokens, get user info, create/login user
+    """
+    if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Google OAuth is not configured"
+        )
+    
+    # Exchange code for tokens
+    async with httpx.AsyncClient() as client:
+        token_response = await client.post(
+            GOOGLE_TOKEN_URL,
+            data={
+                "client_id": settings.GOOGLE_CLIENT_ID,
+                "client_secret": settings.GOOGLE_CLIENT_SECRET,
+                "code": code,
+                "grant_type": "authorization_code",
+                "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+            }
+        )
+        
+        if token_response.status_code != 200:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Failed to get access token: {token_response.text}"
+            )
+        
+        tokens = token_response.json()
+        access_token = tokens.get("access_token")
+        
+        # Get user info from Google
+        userinfo_response = await client.get(
+            GOOGLE_USERINFO_URL,
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        
+        if userinfo_response.status_code != 200:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Failed to get user info from Google"
+            )
+        
+        google_user = userinfo_response.json()
+    
+    # Extract user info
+    email = google_user.get("email")
+    name = google_user.get("name", "")
+    google_id = google_user.get("id")
+    
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email not provided by Google"
+        )
+    
+    # Find or create user
+    user = db.query(User).filter(User.email == email).first()
+    
+    if not user:
+        # Create new user with Google account
+        username = email.split("@")[0]
+        # Make username unique if needed
+        base_username = username
+        counter = 1
+        while db.query(User).filter(User.username == username).first():
+            username = f"{base_username}{counter}"
+            counter += 1
+        
+        user = User(
+            email=email,
+            username=username,
+            full_name=name,
+            hashed_password=get_password_hash(secrets.token_urlsafe(32)),  # Random password
+            is_active=True,
+            is_superuser=False,
+            credits=10.0  # Welcome bonus for new users
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    
+    # Create JWT token
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    jwt_token = create_access_token(
+        data={"sub": user.username, "user_id": user.id},
+        expires_delta=access_token_expires
+    )
+    
+    # Redirect to frontend with token
+    frontend_url = "https://gistify.pro"
+    redirect_url = f"{frontend_url}/auth/callback?token={jwt_token}"
+    
+    return RedirectResponse(url=redirect_url)

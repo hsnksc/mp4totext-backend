@@ -18,7 +18,7 @@ from typing import Dict, Any
 from pathlib import Path
 
 from app.database import init_db, check_db_connection
-from app.api.auth import router as auth_router
+from app.api.auth import router as auth_router, oauth_router
 from app.api.transcription import router as transcription_router
 from app.api.credits import router as credits_router
 from app.websocket import setup_websocket
@@ -217,6 +217,7 @@ from app.api.pulse import router as pulse_router
 from app.api.portal import router as portal_router
 # Note: Chat endpoints will be added to sources_router later
 app.include_router(auth_router)
+app.include_router(oauth_router)  # Google OAuth callback
 app.include_router(transcription_router)
 app.include_router(credits_router)
 app.include_router(admin_router)
