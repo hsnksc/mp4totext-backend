@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     AMAZON_REDIRECT_URI: str = Field(default="https://api.gistify.pro/api/auth/amazon/callback", env="AMAZON_REDIRECT_URI")
     
     # =============================================================================
+    # X (TWITTER) OAUTH 2.0
+    # =============================================================================
+    X_CLIENT_ID: Optional[str] = Field(default=None, env="X_CLIENT_ID")
+    X_CLIENT_SECRET: Optional[str] = Field(default=None, env="X_CLIENT_SECRET")
+    X_REDIRECT_URI: str = Field(default="https://api.gistify.pro/api/auth/x/callback", env="X_REDIRECT_URI")
+    
+    # =============================================================================
     # STORAGE (Cloudflare R2 / S3-compatible)
     # =============================================================================
     STORAGE_ACCOUNT_ID: str = Field(default="", env="STORAGE_ACCOUNT_ID")  # Cloudflare Account ID

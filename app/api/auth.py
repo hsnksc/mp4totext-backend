@@ -301,6 +301,196 @@ async def google_callback(
 
 
 # =============================================================================
+# X (TWITTER) OAUTH 2.0 ENDPOINTS
+# =============================================================================
+
+X_AUTH_URL = "https://twitter.com/i/oauth2/authorize"
+X_TOKEN_URL = "https://api.twitter.com/2/oauth2/token"
+X_USERINFO_URL = "https://api.twitter.com/2/users/me"
+
+# State and PKCE cache for X OAuth (in production, use Redis)
+x_auth_states = {}
+
+
+@router.get("/x/login")
+async def x_login():
+    """
+    Redirect user to X (Twitter) OAuth 2.0 consent screen
+    Uses PKCE (Proof Key for Code Exchange) for security
+    """
+    if not settings.X_CLIENT_ID:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="X (Twitter) OAuth is not configured"
+        )
+    
+    import hashlib
+    import base64
+    
+    # Generate state for CSRF protection
+    state = secrets.token_urlsafe(32)
+    
+    # Generate PKCE code verifier and challenge
+    code_verifier = secrets.token_urlsafe(64)[:128]  # 43-128 characters
+    code_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode()).digest()
+    ).decode().rstrip('=')
+    
+    # Store state and code_verifier
+    x_auth_states[state] = code_verifier
+    
+    params = {
+        "response_type": "code",
+        "client_id": settings.X_CLIENT_ID,
+        "redirect_uri": settings.X_REDIRECT_URI,
+        "scope": "users.read tweet.read offline.access",
+        "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256"
+    }
+    
+    from urllib.parse import urlencode
+    auth_url = f"{X_AUTH_URL}?{urlencode(params)}"
+    
+    return {"auth_url": auth_url, "state": state}
+
+
+@oauth_router.get("/x/callback")
+async def x_callback(
+    code: str = Query(None),
+    state: str = Query(None),
+    error: str = Query(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Handle X (Twitter) OAuth 2.0 callback
+    Exchange code for tokens using PKCE, get user info, create/login user
+    """
+    if error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"X OAuth error: {error}"
+        )
+    
+    if not code or not state:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing code or state parameter"
+        )
+    
+    # Validate state and get code_verifier
+    code_verifier = x_auth_states.pop(state, None)
+    if not code_verifier:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid state parameter"
+        )
+    
+    if not settings.X_CLIENT_ID or not settings.X_CLIENT_SECRET:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="X OAuth is not configured"
+        )
+    
+    import base64
+    
+    # Create Basic Auth header
+    credentials = f"{settings.X_CLIENT_ID}:{settings.X_CLIENT_SECRET}"
+    basic_auth = base64.b64encode(credentials.encode()).decode()
+    
+    # Exchange code for tokens
+    async with httpx.AsyncClient() as client:
+        token_response = await client.post(
+            X_TOKEN_URL,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Authorization": f"Basic {basic_auth}"
+            },
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": settings.X_REDIRECT_URI,
+                "code_verifier": code_verifier
+            }
+        )
+        
+        if token_response.status_code != 200:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Failed to get access token from X: {token_response.text}"
+            )
+        
+        tokens = token_response.json()
+        access_token = tokens.get("access_token")
+        
+        # Get user info from X
+        userinfo_response = await client.get(
+            X_USERINFO_URL,
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"user.fields": "id,name,username,profile_image_url"}
+        )
+        
+        if userinfo_response.status_code != 200:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Failed to get user info from X: {userinfo_response.text}"
+            )
+        
+        x_user_data = userinfo_response.json()
+        x_user = x_user_data.get("data", {})
+    
+    # Extract user info
+    x_user_id = x_user.get("id")
+    x_username = x_user.get("username")
+    x_name = x_user.get("name", "")
+    
+    if not x_user_id or not x_username:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User info not provided by X"
+        )
+    
+    # X doesn't provide email, so we use x_username@x.com as placeholder
+    # Find user by X username pattern or create new
+    placeholder_email = f"{x_username}@x.gistify.local"
+    
+    user = db.query(User).filter(User.email == placeholder_email).first()
+    
+    if not user:
+        # Also check if username exists
+        username = x_username
+        base_username = username
+        counter = 1
+        while db.query(User).filter(User.username == username).first():
+            username = f"{base_username}{counter}"
+            counter += 1
+        
+        user = User(
+            email=placeholder_email,
+            username=username,
+            full_name=x_name,
+            hashed_password=get_password_hash(secrets.token_urlsafe(32)),
+            is_active=True,
+            is_superuser=False,
+            credits=10.0  # Welcome bonus
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    
+    # Create JWT token
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    jwt_token = create_access_token(
+        data={"sub": user.username, "user_id": user.id},
+        expires_delta=access_token_expires
+    )
+    
+    # Redirect to frontend with token
+    frontend_url = "https://gistify.pro"
+    redirect_url = f"{frontend_url}/auth/callback?token={jwt_token}"
+    
+    return RedirectResponse(url=redirect_url)
+# =============================================================================
 # AMAZON OAUTH ENDPOINTS (Login with Amazon)
 # =============================================================================
 
