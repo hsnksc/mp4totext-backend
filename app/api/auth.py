@@ -298,3 +298,168 @@ async def google_callback(
     redirect_url = f"{frontend_url}/auth/callback?token={jwt_token}"
     
     return RedirectResponse(url=redirect_url)
+
+
+# =============================================================================
+# AMAZON OAUTH ENDPOINTS (Login with Amazon)
+# =============================================================================
+
+AMAZON_AUTH_URL = "https://www.amazon.com/ap/oa"
+AMAZON_TOKEN_URL = "https://api.amazon.com/auth/o2/token"
+AMAZON_PROFILE_URL = "https://api.amazon.com/user/profile"
+
+# State cache for Amazon OAuth (in production, use Redis)
+amazon_auth_states = {}
+
+
+@router.get("/amazon/login")
+async def amazon_login():
+    """
+    Redirect user to Amazon OAuth consent screen
+    """
+    if not settings.AMAZON_CLIENT_ID:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Amazon OAuth is not configured"
+        )
+    
+    # Generate state for CSRF protection
+    state = secrets.token_urlsafe(32)
+    amazon_auth_states[state] = True
+    
+    params = {
+        "client_id": settings.AMAZON_CLIENT_ID,
+        "redirect_uri": settings.AMAZON_REDIRECT_URI,
+        "response_type": "code",
+        "scope": "profile",
+        "state": state
+    }
+    
+    query_string = "&".join([f"{k}={v}" for k, v in params.items()])
+    auth_url = f"{AMAZON_AUTH_URL}?{query_string}"
+    
+    return {"auth_url": auth_url, "state": state}
+
+
+@oauth_router.get("/amazon/callback")
+async def amazon_callback(
+    code: str = Query(None),
+    state: str = Query(None),
+    error: str = Query(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Handle Amazon OAuth callback
+    Exchange code for tokens, get user info, create/login user
+    """
+    if error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Amazon OAuth error: {error}"
+        )
+    
+    if not code or not state:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing code or state parameter"
+        )
+    
+    # Validate state
+    if not amazon_auth_states.pop(state, None):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid state parameter"
+        )
+    
+    if not settings.AMAZON_CLIENT_ID or not settings.AMAZON_CLIENT_SECRET:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Amazon OAuth is not configured"
+        )
+    
+    # Exchange code for tokens
+    async with httpx.AsyncClient() as client:
+        token_response = await client.post(
+            AMAZON_TOKEN_URL,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": settings.AMAZON_REDIRECT_URI,
+                "client_id": settings.AMAZON_CLIENT_ID,
+                "client_secret": settings.AMAZON_CLIENT_SECRET
+            }
+        )
+        
+        if token_response.status_code != 200:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Failed to get access token from Amazon: {token_response.text}"
+            )
+        
+        tokens = token_response.json()
+        access_token = tokens.get("access_token")
+        
+        # Get user profile from Amazon
+        profile_response = await client.get(
+            AMAZON_PROFILE_URL,
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        
+        if profile_response.status_code != 200:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Failed to get user profile from Amazon"
+            )
+        
+        amazon_user = profile_response.json()
+    
+    # Extract user info
+    email = amazon_user.get("email")
+    name = amazon_user.get("name", "")
+    amazon_user_id = amazon_user.get("user_id")
+    
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email not provided by Amazon"
+        )
+    
+    # Find or create user
+    user = db.query(User).filter(User.email == email).first()
+    
+    if not user:
+        # Create new user with Amazon account
+        username = email.split("@")[0]
+        # Make username unique if needed
+        base_username = username
+        counter = 1
+        while db.query(User).filter(User.username == username).first():
+            username = f"{base_username}{counter}"
+            counter += 1
+        
+        user = User(
+            email=email,
+            username=username,
+            full_name=name,
+            hashed_password=get_password_hash(secrets.token_urlsafe(32)),  # Random password
+            is_active=True,
+            is_superuser=False,
+            credits=10.0  # Welcome bonus for new users
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    
+    # Create JWT token
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    jwt_token = create_access_token(
+        data={"sub": user.username, "user_id": user.id},
+        expires_delta=access_token_expires
+    )
+    
+    # Redirect to frontend with token
+    frontend_url = "https://gistify.pro"
+    redirect_url = f"{frontend_url}/auth/callback?token={jwt_token}"
+    
+    return RedirectResponse(url=redirect_url)
