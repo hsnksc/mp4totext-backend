@@ -200,7 +200,7 @@ class TranscriptionResponse(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     
-    @field_validator('document_key_points', 'document_topics', 'combined_key_points', mode='before')
+    @field_validator('document_key_points', 'document_topics', 'combined_key_points', 'custom_prompt_history', mode='before')
     @classmethod
     def parse_json_list_fields(cls, v):
         """Parse JSON string fields to list"""
