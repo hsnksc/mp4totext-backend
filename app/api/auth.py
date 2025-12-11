@@ -308,8 +308,12 @@ X_AUTH_URL = "https://twitter.com/i/oauth2/authorize"
 X_TOKEN_URL = "https://api.twitter.com/2/oauth2/token"
 X_USERINFO_URL = "https://api.twitter.com/2/users/me"
 
-# State and PKCE cache for X OAuth (in production, use Redis)
-x_auth_states = {}
+# Redis client for X OAuth state storage
+def get_redis_client():
+    """Get Redis client for OAuth state storage"""
+    import redis
+    redis_url = settings.REDIS_URL or "redis://localhost:6379/0"
+    return redis.from_url(redis_url, decode_responses=True)
 
 
 @router.get("/x/login")
@@ -336,8 +340,16 @@ async def x_login():
         hashlib.sha256(code_verifier.encode()).digest()
     ).decode().rstrip('=')
     
-    # Store state and code_verifier
-    x_auth_states[state] = code_verifier
+    # Store state and code_verifier in Redis (expires in 10 minutes)
+    try:
+        redis_client = get_redis_client()
+        redis_client.setex(f"x_oauth_state:{state}", 600, code_verifier)
+    except Exception as e:
+        print(f"⚠️ Redis not available, using memory fallback: {e}")
+        # Fallback to memory (not recommended for production)
+        if not hasattr(x_login, '_states'):
+            x_login._states = {}
+        x_login._states[state] = code_verifier
     
     params = {
         "response_type": "code",
@@ -378,12 +390,23 @@ async def x_callback(
             detail="Missing code or state parameter"
         )
     
-    # Validate state and get code_verifier
-    code_verifier = x_auth_states.pop(state, None)
+    # Validate state and get code_verifier from Redis
+    code_verifier = None
+    try:
+        redis_client = get_redis_client()
+        code_verifier = redis_client.get(f"x_oauth_state:{state}")
+        if code_verifier:
+            redis_client.delete(f"x_oauth_state:{state}")
+    except Exception as e:
+        print(f"⚠️ Redis not available, checking memory fallback: {e}")
+        # Fallback to memory
+        if hasattr(x_login, '_states'):
+            code_verifier = x_login._states.pop(state, None)
+    
     if not code_verifier:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid state parameter"
+            detail="Invalid or expired state parameter. Please try again."
         )
     
     if not settings.X_CLIENT_ID or not settings.X_CLIENT_SECRET:
