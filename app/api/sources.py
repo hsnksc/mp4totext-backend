@@ -220,6 +220,78 @@ def source_to_response(source: Source) -> dict:
     return response
 
 
+# Simple source item schema for quick source creation
+class SimpleSourceItem(BaseModel):
+    """Simplified schema for creating a source item"""
+    type: str = "text"
+    title: str
+    content: str
+    metadata: Optional[dict] = None
+
+
+class SimpleSourceCreate(BaseModel):
+    """Schema for quick source creation (no AI processing)"""
+    title: str = Field(..., min_length=1, max_length=500)
+    description: Optional[str] = None
+    source_items: List[SimpleSourceItem]
+    transcription_id: Optional[int] = None
+    tags: Optional[List[str]] = None
+
+
+@router.post("", response_model=SourceResponse)
+async def create_source(
+    request: SimpleSourceCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Create a new Source without AI processing.
+    Used for saving content for RAG/PKB.
+    """
+    logger.info(f"📝 User {current_user.username} creating source: {request.title}")
+    
+    # Combine content from all items
+    combined_content = ""
+    for item in request.source_items:
+        combined_content += f"\n\n### {item.title}\n{item.content}"
+    
+    # Create source items in expected format
+    source_items = []
+    for i, item in enumerate(request.source_items):
+        source_items.append({
+            "id": f"item-{i}",
+            "type": item.type,
+            "title": item.title,
+            "content": item.content,
+            "preview": item.content[:200] if item.content else "",
+            "metadata": item.metadata or {}
+        })
+    
+    # Create Source
+    source = Source(
+        user_id=current_user.id,
+        title=request.title,
+        description=request.description,
+        content=combined_content.strip(),
+        source_items=source_items,
+        ai_provider=None,
+        ai_model=None,
+        credits_used=0.0,
+        status="draft",
+        is_public=False,
+        tags=request.tags or [],
+        transcription_id=request.transcription_id
+    )
+    
+    db.add(source)
+    db.commit()
+    db.refresh(source)
+    
+    logger.info(f"✅ Source created: id={source.id}, title={source.title}")
+    
+    return source_to_response(source)
+
+
 @router.get("")
 async def get_user_sources(
     skip: int = 0,
@@ -232,58 +304,113 @@ async def get_user_sources(
     Get all Sources for the current user
     """
     try:
-        # Only select core columns that definitely exist
         from sqlalchemy import text
         
-        # Use raw SQL to avoid SQLAlchemy trying to access PKB columns
-        sql = text("""
-            SELECT id, user_id, title, description, content, source_items,
-                   ai_provider, ai_model, credits_used, status, is_public,
-                   tags, transcription_id, created_at, updated_at
-            FROM sources
-            WHERE user_id = :user_id
-            ORDER BY created_at DESC
-            LIMIT :limit OFFSET :skip
-        """)
+        # Try to get PKB columns if they exist
+        try:
+            sql = text("""
+                SELECT id, user_id, title, description, content, source_items,
+                       ai_provider, ai_model, credits_used, status, is_public,
+                       tags, transcription_id, created_at, updated_at,
+                       pkb_enabled, pkb_status, pkb_collection_name, pkb_chunk_count,
+                       pkb_embedding_model, pkb_created_at, pkb_credits_used, pkb_error_message
+                FROM sources
+                WHERE user_id = :user_id
+                ORDER BY created_at DESC
+                LIMIT :limit OFFSET :skip
+            """)
+            
+            result = db.execute(sql, {
+                "user_id": current_user.id,
+                "limit": limit,
+                "skip": skip
+            })
+            
+            sources = []
+            for row in result:
+                source_dict = {
+                    "id": row[0],
+                    "user_id": row[1],
+                    "title": row[2],
+                    "description": row[3],
+                    "content": row[4],
+                    "source_items": row[5],
+                    "ai_provider": row[6],
+                    "ai_model": row[7],
+                    "credits_used": row[8] or 0.0,
+                    "status": row[9],
+                    "is_public": row[10],
+                    "tags": row[11],
+                    "transcription_id": row[12],
+                    "created_at": row[13],
+                    "updated_at": row[14],
+                    # PKB fields from DB
+                    "pkb_enabled": row[15] if len(row) > 15 else None,
+                    "pkb_status": row[16] if len(row) > 16 else None,
+                    "pkb_collection_name": row[17] if len(row) > 17 else None,
+                    "pkb_chunk_count": row[18] if len(row) > 18 else None,
+                    "pkb_embedding_model": row[19] if len(row) > 19 else None,
+                    "pkb_created_at": row[20] if len(row) > 20 else None,
+                    "pkb_credits_used": row[21] if len(row) > 21 else None,
+                    "pkb_error_message": row[22] if len(row) > 22 else None,
+                }
+                sources.append(source_dict)
+            
+            logger.info(f"📋 User {current_user.username} fetched {len(sources)} sources (with PKB)")
+            return sources
+            
+        except Exception as pkb_error:
+            # PKB columns don't exist - fallback to basic query
+            logger.warning(f"⚠️ PKB columns not available, using basic query: {pkb_error}")
+            
+            sql = text("""
+                SELECT id, user_id, title, description, content, source_items,
+                       ai_provider, ai_model, credits_used, status, is_public,
+                       tags, transcription_id, created_at, updated_at
+                FROM sources
+                WHERE user_id = :user_id
+                ORDER BY created_at DESC
+                LIMIT :limit OFFSET :skip
+            """)
+            
+            result = db.execute(sql, {
+                "user_id": current_user.id,
+                "limit": limit,
+                "skip": skip
+            })
+            
+            sources = []
+            for row in result:
+                source_dict = {
+                    "id": row[0],
+                    "user_id": row[1],
+                    "title": row[2],
+                    "description": row[3],
+                    "content": row[4],
+                    "source_items": row[5],
+                    "ai_provider": row[6],
+                    "ai_model": row[7],
+                    "credits_used": row[8] or 0.0,
+                    "status": row[9],
+                    "is_public": row[10],
+                    "tags": row[11],
+                    "transcription_id": row[12],
+                    "created_at": row[13],
+                    "updated_at": row[14],
+                    # PKB fields - not available
+                    "pkb_enabled": None,
+                    "pkb_status": None,
+                    "pkb_collection_name": None,
+                    "pkb_chunk_count": None,
+                    "pkb_embedding_model": None,
+                    "pkb_created_at": None,
+                    "pkb_credits_used": None,
+                    "pkb_error_message": None,
+                }
+                sources.append(source_dict)
         
-        result = db.execute(sql, {
-            "user_id": current_user.id,
-            "limit": limit,
-            "skip": skip
-        })
-        
-        sources = []
-        for row in result:
-            source_dict = {
-                "id": row[0],
-                "user_id": row[1],
-                "title": row[2],
-                "description": row[3],
-                "content": row[4],
-                "source_items": row[5],
-                "ai_provider": row[6],
-                "ai_model": row[7],
-                "credits_used": row[8] or 0.0,
-                "status": row[9],
-                "is_public": row[10],
-                "tags": row[11],
-                "transcription_id": row[12],
-                "created_at": row[13],
-                "updated_at": row[14],
-                # PKB fields - not available without migration
-                "pkb_enabled": None,
-                "pkb_status": None,
-                "pkb_collection_name": None,
-                "pkb_chunk_count": None,
-                "pkb_embedding_model": None,
-                "pkb_created_at": None,
-                "pkb_credits_used": None,
-                "pkb_error_message": None,
-            }
-            sources.append(source_dict)
-        
-        logger.info(f"📋 User {current_user.username} fetched {len(sources)} sources")
-        return sources
+            logger.info(f"📋 User {current_user.username} fetched {len(sources)} sources (basic)")
+            return sources
     except Exception as e:
         logger.error(f"❌ Error fetching sources: {str(e)}", exc_info=True)
         raise HTTPException(
