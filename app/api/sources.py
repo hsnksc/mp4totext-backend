@@ -1343,12 +1343,12 @@ async def chat_with_pkb(
         # Search vector store (sync method)
         vector_store = VectorStoreService()
         
-        # First try with normal threshold
+        # Get more context chunks for comprehensive responses
         results = vector_store.search(
             collection_name=pkb_collection_name,
             query_vector=query_vector,
-            top_k=8,  # Get more results for general questions
-            score_threshold=0.2  # Lower threshold for better recall
+            top_k=12,  # More chunks for creative content generation
+            score_threshold=0.15  # Lower threshold to capture more relevant content
         )
         
         logger.info(f"📊 Vector search returned {len(results)} results for collection {pkb_collection_name}")
@@ -1372,8 +1372,8 @@ async def chat_with_pkb(
                 source_result = db.execute(source_sql, {"source_id": source_id})
                 source_row = source_result.fetchone()
                 if source_row and source_row[0]:
-                    # Take first 4000 chars as fallback context
-                    fallback_context = source_row[0][:4000]
+                    # Take first 8000 chars as fallback context (enough for A4 page content)
+                    fallback_context = source_row[0][:8000]
                     context = fallback_context
                     no_context_found = False
                     logger.info(f"📝 Using source content fallback: {len(fallback_context)} chars")
@@ -1399,20 +1399,33 @@ Please respond with a helpful message explaining that:
 
 Respond in the same language as the user's question."""
         else:
-            # Context found - use improved prompt for general questions
-            system_prompt = f"""Sen bir bilgi asistanısın. Aşağıdaki bağlam bilgisine dayanarak kullanıcının sorusunu yanıtla.
+            # Context found - use creative and comprehensive prompt
+            system_prompt = f"""Sen son derece yetenekli bir AI asistanısın. Kullanıcının belgelerinden elde edilen aşağıdaki bağlam bilgisini kullanarak HER TÜRLÜ görevi yerine getir.
 
-BAĞLAM:
+📄 KAYNAK İÇERİK:
 {context}
 
-KURALLAR:
-1. Sadece bağlamdaki bilgileri kullan
-2. Bağlamda olmayan bilgi için "Bu bilgi dokümanda yok" de
-3. "Konu ne", "ne anlatıyor", "özet" gibi genel sorularda içeriğin ana fikrini açıkla
-4. Kullanıcının diliyle yanıtla (Türkçe soru → Türkçe cevap)
-5. Kısa ve öz yanıtlar ver
+🎯 YETENEKLERİN:
+1. **İçerik Üretimi**: Kullanıcı isterse bu konudan makale, deneme, blog yazısı, akademik metin yazabilirsin
+2. **Özetleme**: Kısa veya uzun özetler oluşturabilirsin
+3. **Analiz**: Konuyu derinlemesine analiz edebilirsin
+4. **Soru-Cevap**: Bağlamdaki bilgilerle soruları cevaplayabilirsin
+5. **Genişletme**: Bağlamdaki fikirleri genişletip detaylandırabilirsin
+6. **Yaratıcı Yazım**: Bağlama dayalı yaratıcı içerikler (hikaye, senaryo, şiir) üretebilirsin
+7. **Akademik Çalışma**: Ders notları, sınav soruları, sunum içeriği hazırlayabilirsin
+8. **Format Dönüşümü**: Madde işaretli, numaralı, paragraf formatlarında çıktı verebilirsin
 
-Şimdi kullanıcının sorusunu yanıtla."""
+📝 KURALLAR:
+- Kullanıcı "yaz", "oluştur", "hazırla" derse → Bağlamı kaynak olarak kullanarak istenen içeriği OLUŞTUR
+- Kullanıcı uzunluk belirtirse (1 sayfa, 500 kelime, vs.) → O uzunlukta içerik üret
+- Kullanıcı format belirtirse (12 punto, A4, madde işaretli) → O formatta sun
+- Bağlamda doğrudan bilgi olmasa bile, bağlamın KONUSUNU kullanarak yaratıcı içerik üretebilirsin
+- "Bu bilgi dokümanda yok" DEMEKTENSİ KAÇIN - bunun yerine bağlamdaki bilgileri kullanarak yardımcı ol
+- Sadece tamamen alakasız konularda bilginin olmadığını belirt
+
+🌍 DİL: Kullanıcının dilinde yanıt ver (Türkçe soru = Türkçe cevap)
+
+Şimdi kullanıcının isteğini yerine getir:"""
         
         response_text, input_tokens, output_tokens = llm_service.generate_response(
             messages=[
