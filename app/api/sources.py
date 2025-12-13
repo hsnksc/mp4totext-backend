@@ -1342,11 +1342,13 @@ async def chat_with_pkb(
         
         # Search vector store (sync method)
         vector_store = VectorStoreService()
+        
+        # First try with normal threshold
         results = vector_store.search(
             collection_name=pkb_collection_name,
             query_vector=query_vector,
-            top_k=5,
-            score_threshold=0.3  # Lower threshold for better recall
+            top_k=8,  # Get more results for general questions
+            score_threshold=0.2  # Lower threshold for better recall
         )
         
         logger.info(f"📊 Vector search returned {len(results)} results for collection {pkb_collection_name}")
@@ -1360,8 +1362,25 @@ async def chat_with_pkb(
         # Check if we got meaningful context
         no_context_found = not context.strip() or len(results) == 0
         
+        # If no results, try to get source content directly as fallback
+        fallback_context = None
         if no_context_found:
-            logger.warning(f"⚠️ No context found for query: {message[:50]}")
+            logger.warning(f"⚠️ No context found for query: {message[:50]}, trying fallback...")
+            try:
+                # Get source content directly for general questions
+                source_sql = text("SELECT content FROM sources WHERE id = :source_id")
+                source_result = db.execute(source_sql, {"source_id": source_id})
+                source_row = source_result.fetchone()
+                if source_row and source_row[0]:
+                    # Take first 4000 chars as fallback context
+                    fallback_context = source_row[0][:4000]
+                    context = fallback_context
+                    no_context_found = False
+                    logger.info(f"📝 Using source content fallback: {len(fallback_context)} chars")
+            except Exception as fallback_err:
+                logger.warning(f"⚠️ Fallback failed: {fallback_err}")
+        
+        if no_context_found:
             context = "No relevant context found in the knowledge base."
         
         # Generate response with LLM (sync method)
@@ -1369,8 +1388,7 @@ async def chat_with_pkb(
         from app.services.rag_service import LLMModel
         llm_model_enum = LLMModel.GPT4O_MINI if "mini" in llm_model.lower() else LLMModel.GPT4O
         
-        # Add special instruction if no context found
-        system_prompt = f"Answer the user's question based on the following context:\n\n{context}"
+        # Build better system prompt
         if no_context_found:
             system_prompt = """You are a helpful assistant. The knowledge base search returned no relevant results.
             
@@ -1380,6 +1398,21 @@ Please respond with a helpful message explaining that:
 3. Suggest the user to wait a moment and try again, or rephrase their question
 
 Respond in the same language as the user's question."""
+        else:
+            # Context found - use improved prompt for general questions
+            system_prompt = f"""Sen bir bilgi asistanısın. Aşağıdaki bağlam bilgisine dayanarak kullanıcının sorusunu yanıtla.
+
+BAĞLAM:
+{context}
+
+KURALLAR:
+1. Sadece bağlamdaki bilgileri kullan
+2. Bağlamda olmayan bilgi için "Bu bilgi dokümanda yok" de
+3. "Konu ne", "ne anlatıyor", "özet" gibi genel sorularda içeriğin ana fikrini açıkla
+4. Kullanıcının diliyle yanıtla (Türkçe soru → Türkçe cevap)
+5. Kısa ve öz yanıtlar ver
+
+Şimdi kullanıcının sorusunu yanıtla."""
         
         response_text, input_tokens, output_tokens = llm_service.generate_response(
             messages=[
